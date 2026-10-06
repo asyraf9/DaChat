@@ -10,7 +10,7 @@
 
 > **SCOPE** — Three-layer architecture: Infrastructure (institutional surveillance), Market Baseline (accountability-preserving recipient controls), and Feature Layer (interpersonal privacy and mental health by harm axis).
 
-> **RELATED DOCUMENTS** — `RQSM_Blueprint_v3.md` (cryptographic and transport architecture). Where this document references cryptographic mechanisms, the RQSM blueprint is the authoritative specification.
+> **RELATED DOCUMENTS** — `RQSM_Blueprint.md` (cryptographic and transport architecture). Where this document references cryptographic mechanisms, the RQSM blueprint is the authoritative specification.
 
 ---
 
@@ -73,7 +73,7 @@ The XMPP server is treated as an interchangeable driver, not a hard dependency. 
 - This follows the hierarchical settings model: global server default, overridden per folder, overridden per chat
 - The main server is blind to sender identity and content for traffic routed to external servers. It does observe that opaque sealed delivery events to a known recipient occurred.
 
-> **Qualification — server-side module:** the *app* is server-agnostic, but sealed-sender behaviour (stripping/replacing the `from` attribute, accepting blobs addressed by ephemeral recipient ID) requires a **deployed server module** on each of Prosody and ejabberd. That module is a named deliverable, not stock configuration. See `RQSM_Blueprint_v3.md §7.2` (Scenario 1). "Swapped without app changes" is accurate for the client; the server side needs the module.
+> **Qualification — server-side module:** the *app* is server-agnostic, but sealed-sender behaviour (stripping/replacing the `from` attribute, accepting blobs addressed by ephemeral recipient ID) requires a **deployed server module** on each of Prosody and ejabberd. That module is a named deliverable, not stock configuration. See `RQSM_Blueprint.md §7.2` (Scenario 1). "Swapped without app changes" is accurate for the client; the server side needs the module.
 
 > **Qualification — server assignment is bilateral:** moving a chat to an external server via the folder/chat cascade is not a purely local setting. It changes where *both* participants' traffic is routed, so it is established via the invitation handshake (§2.3). Subsequent *unilateral* server reassignment by one party (e.g. moving a chat between folders that reference different servers) needs a defined behaviour for the other party — see Open Items (§7).
 
@@ -90,7 +90,7 @@ When two users wish to move a conversation to a private server, the handshake is
 
 **Required security properties of the invitation payload:**
 
-Every private channel invitation requires **all six** fields below. `RQSM_Blueprint_v3.md §5.3.2` is the **authoritative and complete** specification for validation — implement against it, not against this summary.
+Every private channel invitation requires **all six** fields below. `RQSM_Blueprint.md §5.3.2` is the **authoritative and complete** specification for validation — implement against it, not against this summary.
 
 | Field | Purpose |
 |---|---|
@@ -105,7 +105,7 @@ An invitation missing any required field (per RQSM §5.3.2) must be silently rej
 
 ## 2.4 RQSM — Resilient Quantum-Signal Mesh
 
-The full RQSM specification is maintained in `RQSM_Blueprint_v3.md`. Key guarantees relevant to this blueprint:
+The full RQSM specification is maintained in `RQSM_Blueprint.md`. Key guarantees relevant to this blueprint:
 
 - Session, ratchet, and group crypto via **`libsignal-client`** (Signal's own audited Rust implementation, reuse-vetted-first — RQSM §18.4), not a custom protocol stack
 - Post-quantum *confidentiality* via libsignal **PQXDH (ML-KEM-1024 + X25519 hybrid)** at session establishment. The ongoing Double Ratchet DH step is classical — post-compromise recovery is not quantum-resistant (RQSM §5.1)
@@ -129,17 +129,17 @@ To prevent bot registration while preserving privacy, the following verification
   - **Admin approval** — username/email registration with admin review before activation
   - **Email + CAPTCHA** — lower friction, filters bots
 - Server operators choose their verification model. The main public server uses invite-only or admin approval by default.
-- After verification, contacts are established by default via server-distributed prekey bundles (`RQSM_Blueprint_v3.md §5.6`); QR pairing is the out-of-band upgrade to a `verified` contact, not the only way to reach someone.
+- After verification, contacts are established by default via server-distributed prekey bundles (`RQSM_Blueprint.md §5.6`); QR pairing is the out-of-band upgrade to a `verified` contact, not the only way to reach someone.
 
 > **Verification record retention — Email + CAPTCHA:** For email + CAPTCHA verification, the email address and confirmation token must be discarded immediately after the account is confirmed. These records must not be stored alongside or linked to the user's identity key, username, or any persistent account record. Retaining them creates a permanent email → identity linkage that undermines the no-phone-number privacy guarantee.
 
-> **Offline onboarding constraint:** verification and prekey publication require reaching a server, so a brand-new account cannot be created during a total internet blackout. Resilience applies to already-established identities and their sessions (which continue over the mesh transports), not to first-time onboarding. Two users onboarding during a blackout must use the QR-only path. See `RQSM_Blueprint_v3.md §9`.
+> **Offline onboarding constraint:** verification and prekey publication require reaching a server, so a brand-new account cannot be created during a total internet blackout. Resilience applies to already-established identities and their sessions (which continue over the mesh transports), not to first-time onboarding. Two users onboarding during a blackout must use the QR-only path. See `RQSM_Blueprint.md §9`.
 
 ## 2.6 Push Notification Metadata
 
 Every feature in Layers 2 and 3 assumes notifications work. That assumption has a privacy cost that must be stated, because a self-hosted, surveillance-averse app cannot silently rely on the same push path as a mainstream messenger.
 
-- **iOS background delivery:** self-hosted XMPP cannot wake the app for background messages without going through Apple Push Notification service (APNs). Even with content end-to-end encrypted, this exposes message-**timing** metadata to Apple (adversary "push infrastructure", `RQSM_Blueprint_v3.md §1.1`). Android/FCM has the analogous exposure to Google.
+- **iOS background delivery:** self-hosted XMPP cannot wake the app for background messages without going through Apple Push Notification service (APNs). Even with content end-to-end encrypted, this exposes message-**timing** metadata to Apple (adversary "push infrastructure", `RQSM_Blueprint.md §1.1`). Android/FCM has the analogous exposure to Google.
 - **Mitigations:** where possible, run a self-hosted push proxy and coalesce/delay notifications to blunt timing correlation; on Android, a foreground service or direct XMPP push can avoid FCM at a battery cost. Document the residual exposure in the security disclosure.
 - **OS-surface exposure of previews:** notification content previews (§4.1, §4.3.2) surface message text at the OS layer — lock screens, notification-listener apps, paired smartwatches, and car displays. Preview controls must default to privacy-safe (sender name or nothing for untrusted senders) and the exposure surfaces above must be considered part of the threat surface, not just the in-app UI.
 
@@ -187,7 +187,7 @@ Every feature in Layers 2 and 3 assumes notifications work. That assumption has 
 - Message delete within configurable timeframe
 - Per-chat auto-delete timer (message lifetime)
 
-> **Message deletion in E2EE and Pure E2EE modes:** Message deletion removes content from the local UI **and from the local encrypted history store** (`RQSM_Blueprint_v3.md §5.8` — readable history lives there, not in the ratchet or CRDT store) and, where the transport supports it, sends a deletion signal to connected peers. In Pure E2EE and store-and-forward mode, deletion signals are best-effort and cannot be guaranteed to remove content from all peers' local stores. Deletion is not equivalent to erasure in a store-and-forward architecture. Users should be informed of this limitation in the app's privacy disclosure and at the point of enabling auto-delete in Pure E2EE mode.
+> **Message deletion in E2EE and Pure E2EE modes:** Message deletion removes content from the local UI **and from the local encrypted history store** (`RQSM_Blueprint.md §5.8` — readable history lives there, not in the ratchet or CRDT store) and, where the transport supports it, sends a deletion signal to connected peers. In Pure E2EE and store-and-forward mode, deletion signals are best-effort and cannot be guaranteed to remove content from all peers' local stores. Deletion is not equivalent to erasure in a store-and-forward architecture. Users should be informed of this limitation in the app's privacy disclosure and at the point of enabling auto-delete in Pure E2EE mode.
 
 ## 3.6 Data
 
@@ -201,19 +201,19 @@ Every feature in Layers 2 and 3 assumes notifications work. That assumption has 
 
 Blocking is a baseline safety expectation, not an exotic control, and is distinct from the "who can DM/add me" access controls in §3.1 (which govern *strangers*; blocking governs *existing contacts*). It is included at market parity.
 
-- **Block a contact:** stops messages, calls, presence, and discovery from that contact. In the serverless/mesh modes this has a cryptographic dimension — blocking deletes the pairwise discovery secret so the contact can no longer discover the device (`RQSM_Blueprint_v3.md §6.4`). Blocking one contact never requires re-pairing others.
+- **Block a contact:** stops messages, calls, presence, and discovery from that contact. In the serverless/mesh modes this has a cryptographic dimension — blocking deletes the pairwise discovery secret so the contact can no longer discover the device (`RQSM_Blueprint.md §6.4`). Blocking one contact never requires re-pairing others.
 - **Report a contact or message:** in server-backed modes, a report sends opaque abuse evidence (message references, never plaintext) to the server operator per that server's policy. In Pure E2EE/serverless modes there is no operator to receive a report, so reporting is local-only (block plus optional local evidence export). Users must be told which applies in their current mode.
-- **Residual limit:** a blocked contact who already recorded your presence keeps those past observations; blocking prevents future discovery, not retroactive de-anonymisation (`RQSM_Blueprint_v3.md §6.4`).
+- **Residual limit:** a blocked contact who already recorded your presence keeps those past observations; blocking prevents future discovery, not retroactive de-anonymisation (`RQSM_Blueprint.md §6.4`).
 - **Group-context blocking** (moderator abuse, coordinated pile-ons) is deliberately out of scope here and framed in §7 for the future cyberbullying blueprint.
 
 ## 3.8 Media & Attachments
 
 Media is a first-class privacy surface and must not inherit the text pipeline's assumptions.
 
-- **Encryption at rest and in transit:** attachments are wrapped in the same `EncryptedEnvelope` pattern as text; the media blob is E2EE and stored in the encrypted history store (`RQSM_Blueprint_v3.md §5.8`), never as a plaintext file in a general cache.
+- **Encryption at rest and in transit:** attachments are wrapped in the same `EncryptedEnvelope` pattern as text; the media blob is E2EE and stored in the encrypted history store (`RQSM_Blueprint.md §5.8`), never as a plaintext file in a general cache.
 - **No plaintext CDN cache:** the constitution's `cached_network_image` is for *public* URL-fetched images only. It MUST NOT be used for E2EE message media — that would cache decrypted content as plaintext on disk. E2EE media uses a dedicated encrypted media store with explicit decrypt-to-memory rendering.
 - **Metadata stripping:** on send, strip EXIF/location and other embedded metadata from photos and files by default (a classic family-chat leak — GPS coordinates in a shared photo). Stripping is on by default with an explicit opt-out per send.
-- **Thumbnails and previews:** generated locally from decrypted content; thumbnail caches are subject to the same encrypted-at-rest and OS-backup-exclusion rules (`RQSM_Blueprint_v3.md §18.5`).
+- **Thumbnails and previews:** generated locally from decrypted content; thumbnail caches are subject to the same encrypted-at-rest and OS-backup-exclusion rules (`RQSM_Blueprint.md §18.5`).
 - **Deletion:** deleting a message deletes its media from the encrypted media store, subject to the same store-and-forward erasure limits as text (§3.5).
 
 ---

@@ -35,14 +35,35 @@
   |              | implementation (e.g. libsignal) over reimplementing session,|
   |              | ratchet, or group cryptography. Cryptography row + anti-    |
   |              | pattern updated.                                            |
+  | 2.0.0        | MAJOR: state management redefined — Riverpod replaced by    |
+  |              | flutter_bloc (Cubit-first, no state-management codegen).    |
+  |              | STATE rewritten; ARCH layer/DI/EventBus rules, directory    |
+  |              | tree, TEST, UI, AGENT, packages and Appendices updated.     |
+  |              | flutter_hooks retained, restricted to widget-local          |
+  |              | controllers. C19: BlocObserver redaction. C20: clearing     |
+  |              | sensitive presentation state on lock/logout. CI gate now    |
+  |              | states the C13 bar. Appendix B failure-mapping example      |
+  |              | corrected to comply with C3.                                |
+  |              | Consistency pass: domain-layer pure-Dart import allowlist;  |
+  |              | EventBus injected via constructor (no service locator in    |
+  |              | domain); AppFailure hierarchy exempt from freezed; C13 KAT  |
+  |              | scope reconciled with C18; Page/View split for testable     |
+  |              | screens; freezed examples use `abstract class`; dartdoc     |
+  |              | examples no longer use unresolvable `[Cn]` references.      |
+  |              | "-lean" suffix dropped; file renamed to the version-free    |
+  |              | `flutter_constitution.md`.                                  |
 
   Decisions on record:
   - Storage:    isar only (hive removed)
-  - State:      NotifierProvider for all state (StateProvider removed)
+  - State:      flutter_bloc — Cubit by default, Bloc only where event
+                concurrency or an auditable event log is needed. Riverpod
+                removed (v2.0.0). flutter_hooks kept for widget-local
+                controllers only
   - Flavours:   dev / staging / prod, per-flavour .env files
   - Events:     get_it singleton EventBus (event_bus package)
   - BDD timing: .feature files authored during planning, accepted with plan
-  - Coverage:   ≥ 80% line coverage, domain + data layers only
+  - Coverage:   ≥ 80% line coverage, domain + data layers; ≥ 95% line +
+                branch for core/crypto + core/security (C13)
   - l10n:       flutter_localizations + intl (.arb, gen-l10n)
   - Assets:     flutter_gen (type-safe code-gen accessors)
   - Crypto:     long-term wrapping key never leaves the hardware secure
@@ -54,7 +75,7 @@
   - Crypto CI:  cryptographic config identical across all flavours
 -->
 
-# Flutter Constitution · v1.4.2-lean
+# Flutter Constitution · v2.0.0
 
 > **Agent instruction**: Read this file in full before producing any plan,
 > code, or test. Every MUST is a hard rule. Every MUST NOT is an absolute
@@ -81,6 +102,9 @@
   and the "key material never crosses Isolate boundaries" example are satisfied
   simultaneously.
 - Use `freezed` for all data classes, union types, and sealed classes.
+  **Hierarchy exception**: the `AppFailure` hierarchy (see Failure Hierarchy)
+  is hand-written sealed classes, because subtypes span files and features;
+  every subtype MUST implement value equality (required by `bloc_test`).
   **Security exception [C1]**: classes holding raw key material (private keys,
   shared secrets, ratchet chain or message keys) MUST NOT use `freezed`.
   Implement `toString()` manually returning `'[SecuritySensitive — contents withheld]'`.
@@ -106,8 +130,14 @@ Every feature is a bounded context with three layers: `data/`, `domain/`,
 
 ### Layer Rules
 
-- `domain/` MUST be pure Dart — zero Flutter or third-party framework imports.
-- UI code MUST only reach the domain through use cases or Riverpod providers.
+- `domain/` MUST be pure Dart — zero Flutter imports. The only permitted
+  third-party imports are these pure-Dart packages: `freezed_annotation`,
+  `fpdart`, `injectable` (annotations only), `event_bus`, and `meta`. No
+  `get_it` service-locator calls in `domain/` — dependencies arrive through
+  constructors.
+- Widgets MUST only reach the domain through a Cubit or Bloc, which in turn
+  calls use cases. Widgets never call use cases, repositories, or data sources
+  directly. See [STATE](#state--state-management).
 - DTOs (`data/models/`) MUST NOT leak into `domain/` or `presentation/`.
   Map them to domain entities at the repository boundary.
 - DTOs MUST NOT represent or contain raw cryptographic material. No
@@ -140,13 +170,17 @@ Every feature is a bounded context with three layers: `data/`, `domain/`,
 
 - One `EventBus` instance, registered as a `get_it` singleton in
   `core/di/event_bus_module.dart` before any feature module initialises.
-- Dispatch: `getIt<EventBus>().fire(event)` from a use case, domain service, or
+- The `EventBus` is constructor-injected into every dispatcher and consumer
+  (resolved by `get_it`/`injectable`) — never looked up with `getIt<EventBus>()`
+  inside a class.
+- Dispatch: `_eventBus.fire(event)` from a use case, domain service, or
   infrastructure service registered in `get_it` (e.g. a transport switcher in
   `data/`) — never from presentation code. **[C16]** The rule's intent is to
   keep dispatch out of the UI, not to bar the data layer; an infrastructure
   service that owns the state change may dispatch it.
-- Consume: `getIt<EventBus>().on<SomeEvent>().listen(...)` in a `Notifier` /
-  `AsyncNotifier` or a domain service. Subscriptions MUST be cancelled on dispose.
+- Consume: `_eventBus.on<SomeEvent>().listen(...)` in a Cubit / Bloc
+  or a domain service. Subscriptions MUST be cancelled on dispose — in a Cubit
+  or Bloc, by overriding `close()`.
 - Event fields MUST be value types or entity IDs — no mutable objects.
 - Security-critical events (auth state, crypto session state, key errors) MUST
   list an explicit `@consumers` allowlist in their dartdoc. Adding a new
@@ -161,7 +195,7 @@ Missing tags are a Constitution violation caught at code review.
 |---|---|
 | `@event` | Bare marker (required for scanner) |
 | `@dispatcher` | Use case or service that fires this event |
-| `@consumers` | Comma-separated consumers (notifiers, services, use cases) |
+| `@consumers` | Comma-separated consumers (Cubits/Blocs, services, use cases) |
 | `@payload` | Significant fields and their types |
 | `@since` | Semver or date introduced (e.g. `0.1.0`) |
 
@@ -194,6 +228,7 @@ Missing tags are a Constitution violation caught at code review.
 | `core/extensions/` | Shared `extension` methods |
 | `core/utils/` | Stateless utility functions |
 | `core/l10n/` | `AppLocalizations` delegate config |
+| `core/state/` | `AppBlocObserver` (redacting global observer **[C19]**), app-wide Cubits (e.g. auth/session-lock) |
 
 No new `core/` subdirectory without rationale in the plan's Complexity table.
 
@@ -232,10 +267,12 @@ field as potentially visible. **[C3]**
 - Each feature provides a `@module`-annotated class in `data/di/<feature>_module.dart`.
 - `configureDependencies()` in `core/di/injection.dart` aggregates all modules
   and MUST be awaited before `runApp()`.
-- **Boundary rule**: `get_it` owns infrastructure (repositories, data sources,
-  services, `Dio`, `EventBus`). Riverpod owns UI-facing reactive state.
-  Providers resolve `get_it` dependencies at the provider boundary.
-  No duplication between the two containers.
+- **Single container rule**: `get_it` is the only DI container. It owns
+  infrastructure (repositories, data sources, services, `Dio`, `EventBus`) and
+  constructs Cubits/Blocs, registered with `@injectable` (a new instance per
+  resolution, never a singleton). `BlocProvider` does not do DI — it only
+  scopes a Cubit's lifetime to a widget subtree:
+  `BlocProvider(create: (_) => getIt<ChatCubit>())`.
 
 ### Directory Tree
 
@@ -250,6 +287,7 @@ lib/
 │   ├── constants/
 │   ├── extensions/
 │   ├── utils/
+│   ├── state/         # AppBlocObserver, app-wide Cubits
 │   └── l10n/
 ├── features/
 │   └── <feature>/
@@ -271,7 +309,7 @@ lib/
 │       └── presentation/
 │           ├── pages/
 │           ├── widgets/
-│           └── providers/     # Top-level Riverpod declarations only
+│           └── bloc/          # Cubits/Blocs + their state (and event) files
 ├── l10n/              # *.arb translation files
 └── main.dart
 
@@ -287,16 +325,100 @@ tool/
 
 ## STATE — State Management
 
-- **Only Riverpod** (`riverpod` + `flutter_hooks` + `riverpod_generator`).
-  No `Provider`, `GetX`, or `BLoC`.
-- Use `AsyncNotifierProvider` for async data.
-- Use `NotifierProvider` for all synchronous mutable state, including simple
-  toggles. `StateProvider` is not approved.
-- Use `@riverpod` annotations (`riverpod_generator`) for all providers.
-- Providers MUST be top-level declarations in `presentation/providers/` files —
-  never nested inside widget classes.
-- Handle loading, data, and error branches for every `AsyncValue`. Never ignore
-  the error branch.
+**Principle**: state management is plain, readable Dart — no state-management
+code generation. Every state transition is explicit and traceable.
+
+### Library
+
+- **Only `flutter_bloc`** (with `bloc`). No Riverpod, GetX, MobX, signals, or
+  `hydrated_bloc` / `replay_bloc`. `provider` arrives as a transitive
+  dependency of `flutter_bloc`; its own APIs (`ChangeNotifierProvider`,
+  `Provider<T>`, etc.) MUST NOT be used directly.
+
+### Cubit vs Bloc
+
+- **Cubit is the default.** Use a Cubit for all state unless one of the
+  following applies.
+- Use a **Bloc** (event-driven) only when:
+  - the state needs event concurrency control (`restartable`, `droppable`,
+    `sequential` via `bloc_concurrency`) — e.g. search, typing indicators,
+    rapid user input. Debounce = `restartable()` plus an initial
+    `await Future.delayed(...)` in the handler; no `rxdart`; or
+  - the flow is security-critical (auth, session verification, key-change
+    handling) and benefits from an explicit, auditable event log.
+- Record the reason for every Bloc in its class dartdoc.
+
+### Structure
+
+- Files live in `presentation/bloc/`: `<name>_cubit.dart` + `<name>_state.dart`
+  (+ `<name>_event.dart` for a Bloc). One Cubit/Bloc per file.
+- States and events are immutable. Model state variants as a sealed union
+  (`freezed`, per [LANG](#lang--language--dart)) — e.g. `initial`, `loading`,
+  `loaded`, `failure`. A failure variant carries an `AppFailure` only — never a
+  raw exception or message **[C3]**.
+- **Thin Cubits**: a Cubit/Bloc orchestrates use cases and maps `Result<T>` to
+  state. It MUST NOT contain business rules, call repositories or data sources
+  directly, or touch `Dio` / `EventBus.fire`. Business logic belongs in use cases
+  and domain services. (This also keeps the presentation layer cheap to change.)
+- Dependencies (use cases, domain services) are injected through the
+  constructor and resolved by `get_it`. A Cubit MUST NOT depend on another
+  Cubit; coordinate through a `BlocListener` in the widget tree or a domain
+  event via `EventBus`.
+
+### Lifecycle
+
+- Provide with `BlocProvider(create: (_) => getIt<XCubit>())` so the provider
+  owns and closes the instance. `BlocProvider.value` is only for passing an
+  **existing** instance to a new subtree (e.g. a pushed route) — never with a
+  freshly constructed instance.
+- App-wide Cubits (auth, session lock) are provided once above `MaterialApp`
+  via `MultiBlocProvider` and live in `core/state/`.
+- Override `close()` to cancel every stream / `EventBus` subscription the
+  Cubit owns.
+- After any `await`, check `isClosed` before calling `emit`.
+- **Sensitive state [C20]**: a Cubit/Bloc whose state holds decrypted message
+  content, contact identities, or other user content MUST emit a cleared state
+  and be closed on app lock and logout. Key material MUST NEVER be held in any
+  Cubit/Bloc state (see [C1], [C17]). The Dart GC cannot guarantee memory is
+  wiped; this rule minimises retention, it does not guarantee erasure.
+
+### UI Binding
+
+- **Page/View split**: each screen is an `XPage` that only creates the
+  `BlocProvider` (resolving the Cubit from `get_it`) and an `XView` that
+  renders state. Widget tests pump `XView` with a mock Cubit; they never
+  touch `get_it`.
+- React to state in `build()` with `BlocBuilder`, `BlocSelector`,
+  `BlocConsumer`, or `context.watch` / `context.select`. Use `context.read`
+  only in callbacks and `initState()` — never to obtain state that should
+  trigger a rebuild.
+- Side effects (navigation, dialogs, snackbars) MUST happen in `BlocListener`
+  (or the `listener` of `BlocConsumer`) — never inside a `builder`.
+- Switch exhaustively over sealed state — no `default` / wildcard branch.
+  Every loading, data, and failure variant MUST be rendered. Never ignore the
+  failure branch.
+- Use `BlocSelector` or `buildWhen` to limit rebuilds on list-heavy and
+  frequently updating screens (chat lists, typing indicators).
+
+### Observation
+
+- One global `AppBlocObserver` in `core/state/`, set as `Bloc.observer` before
+  `runApp()`.
+- **Redaction [C19]**: the observer MUST log only the Cubit/Bloc type and the
+  `runtimeType` of states and events — never their `toString()` or fields.
+  Generated `freezed` `toString()` would otherwise write plaintext and user
+  content to logs. `onError` logs `AppFailure` codes only. All output goes
+  through `AppLogger` and is bound by the [C5] blocklist.
+
+### `flutter_hooks` (restricted)
+
+- `flutter_hooks` is retained only for **widget-local ephemeral controllers**
+  (`AnimationController`, `TextEditingController`, `FocusNode`,
+  `ScrollController`) via `HookWidget`, as an alternative to `StatefulWidget`
+  lifecycle boilerplate.
+- Hooks MUST NOT hold shared, domain, or async data state (`useFuture` /
+  `useStream` for domain data are prohibited) — that belongs in a Cubit/Bloc.
+  Plain `StatelessWidget` / `StatefulWidget` remain the default.
 
 ---
 
@@ -304,7 +426,9 @@ tool/
 
 - All routes defined in `lib/core/router/app_router.dart`.
 - Named routes only — no string literals in navigation calls.
-- Auth guards via `GoRouter.redirect`.
+- Auth guards via `GoRouter.redirect`, reading the app-wide auth Cubit's
+  current state; pass a `refreshListenable` driven by that Cubit's `stream` so
+  redirects re-evaluate when auth state changes.
 - Pass data via route parameters or `extra` — never via global state.
 
 ---
@@ -326,7 +450,7 @@ tool/
 
 | Scenario scope | Layer |
 |---|---|
-| Single use case, entity, or value object | Unit |
+| Single use case, entity, value object, or Cubit/Bloc | Unit |
 | Single screen or widget interaction | Widget |
 | End-to-end user journey | Integration |
 
@@ -336,11 +460,17 @@ Cover: all use cases, all repository implementations (DTO mapping +
 error-to-`Failure` conversion), all domain entities/value objects with logic,
 all domain services. Use `mocktail` — no real network or database calls.
 
+Every Cubit/Bloc MUST have `blocTest` (`bloc_test`) coverage of each public
+method or event, including the failure path, with its use cases mocked via
+`mocktail`. Security-sensitive Cubits MUST also test the [C20] clear-on-lock
+behaviour.
+
 ### Widget Tests
 
 Cover: all custom widgets, all screens (minimum: renders, key interactions).
-Use `pumpWidget` with `ProviderScope` overrides. Verify loading/data/error
-states.
+Pump the screen's `XView` (see Page/View split in STATE) wrapped in
+`BlocProvider.value` holding a `MockCubit` / `MockBloc` (`bloc_test`); drive
+states with `whenListen`. Verify every state variant renders (loading/data/failure).
 
 ### Integration Tests
 
@@ -353,7 +483,9 @@ Each test MUST trace back to a `.feature` scenario.
   `flutter test --coverage`.
 - **Security-critical code — `core/crypto/` and `core/security/` — MUST meet a
   higher bar: ≥ 95% line AND branch coverage, plus known-answer test vectors
-  for every primitive. [C13]** These directories live under `core/` and would
+  for every primitive the project implements itself. [C13]** Primitives
+  delegated to a vetted library under **[C18]** are covered by interop tests
+  against that library instead of re-derived vectors. These directories live under `core/` and would
   otherwise fall outside the domain/data gate; they are the highest-risk code in
   the project and are explicitly in-scope at this raised bar. A PR reducing their
   coverage below the bar MUST NOT be merged.
@@ -381,7 +513,7 @@ test/
 │       └── steps/        # Feature-local step definitions
 ├── shared/
 │   ├── common_steps/     # Steps used by 2+ features
-│   ├── support/          # Fakes, mocks, ProviderScope helpers
+│   ├── support/          # Fakes, mocks (incl. MockCubit/MockBloc), pump helpers
 │   └── fixtures/         # Test data — synthetic key material only
 └── runners/              # Thin BDD test runners
 ```
@@ -396,6 +528,8 @@ All of the following MUST also pass in CI before any PR is merged:
 - `dart analyze` → zero issues
 - `dart doc . 2>&1 | grep -i warning` → no output
 - `flutter test --coverage` → ≥ 80% line coverage on domain + data layers
+- `core/crypto/` + `core/security/` → ≥ 95% line AND branch coverage, with
+  known-answer vectors for project-implemented primitives **[C13]**
 - All three test layers pass (unit, widget, integration)
 - No unapproved packages in `pubspec.yaml` diff
 
@@ -429,8 +563,9 @@ project-level `DESIGN.md` and are not governed here.
 - All interactive widgets and images MUST have a `Semantics` label (reinforces
   LANG). Non-decorative images MUST set `excludeFromSemantics: false` and
   provide a meaningful label.
-- Never use `setState` in a widget that could be a `ConsumerWidget`. If state
-  is shared or outlives the widget, it belongs in a provider.
+- `setState` (or a `flutter_hooks` hook) is only for widget-local ephemeral UI
+  state. If state is shared, outlives the widget, or comes from the domain, it
+  belongs in a Cubit/Bloc (see [STATE](#state--state-management)).
 - `const` constructors MUST be used on all widgets where possible — the linter
   enforces this but agents must not suppress the warning.
 - Avoid deep widget nesting — extract sub-trees into named widget classes when
@@ -525,7 +660,8 @@ See [Appendix B](#appendix-b-reference-examples) for dartdoc examples.
 - Declare assets in `pubspec.yaml` under `flutter.assets:` and `flutter.fonts:`.
 - Reference assets via `flutter_gen` accessors (e.g. `Assets.images.logo`) —
   never raw path strings.
-- Regenerate with `dart run build_runner build` after any asset change.
+- Regenerate with `dart run build_runner build --delete-conflicting-outputs`
+  after any asset change.
 
 ---
 
@@ -591,7 +727,8 @@ Only use packages from this list. Justify any addition in the plan.
 |---|---|
 | Navigation | `go_router` |
 | Networking | `dio` + `retrofit` |
-| State Management | `riverpod` + `flutter_hooks` + `riverpod_generator` |
+| State Management | `flutter_bloc` + `bloc` + `bloc_concurrency` |
+| Widget-local controllers | `flutter_hooks` — restricted, see [STATE](#flutter_hooks-restricted) |
 | Code Generation | `freezed` + `json_serializable` + `injectable` |
 | FP / Result | `fpdart` |
 | Local Storage | `isar` |
@@ -603,7 +740,7 @@ Only use packages from this list. Justify any addition in the plan.
 | Localisation | `flutter_localizations` + `intl` |
 | Env Vars | `flutter_dotenv` |
 | Logging | `logger` |
-| Testing | `mocktail` |
+| Testing | `mocktail` + `bloc_test` |
 | Coverage | `coverage` |
 | Linting | `very_good_analysis` |
 | Cryptography | No default. Each project documents its crypto packages in the plan. Every addition requires: named threat model rationale, security justification, and documented blast-radius if the package is compromised. **[C8]** **Reuse-vetted-first [C18]:** prefer adopting a vetted, audited protocol implementation (e.g. `libsignal`) over reimplementing session, ratchet, or group cryptography. Reimplementing a standard protocol a vetted library already provides requires explicit plan justification and an independent audit; where the vetted library is unsupported for third-party use, vendor it at a pinned, digest-verified commit rather than rolling your own. |
@@ -622,7 +759,8 @@ Only use packages from this list. Justify any addition in the plan.
 1. Read this constitution in full before producing any plan or code.
 2. Author `.feature` files during planning. Do not begin implementation until
    plan and `.feature` files are accepted.
-3. After adding or modifying any provider, event class, or asset, run:
+3. After adding or modifying any `freezed` class (including states, events,
+   and domain events), `injectable` registration, or asset, run:
    ```
    dart run build_runner build --delete-conflicting-outputs
    ```
@@ -658,15 +796,25 @@ Encountering any of these requires refactoring before proceeding.
 
 | Anti-Pattern | Why Banned |
 |---|---|
-| `context.read()` inside `initState()` | Not yet mounted; use `ref.read()` in `AsyncNotifier.build()` or `useEffect` |
+| `context.watch()` / `context.select()` outside `build()` | Throws or silently misses updates; use `context.read()` in callbacks and `initState()` |
+| `context.read()` in `build()` to obtain state | Widget never rebuilds on change; use `BlocBuilder` / `BlocSelector` / `context.watch` |
+| Navigation, dialogs, or snackbars inside a `BlocBuilder` builder | Builders run on every rebuild; side effects belong in `BlocListener` |
+| `BlocProvider.value` with a freshly constructed instance | Provider never closes it — leaked subscriptions and retained state; use `BlocProvider(create:)` |
+| Business logic, repository, or data-source calls inside a Cubit/Bloc | Thin-Cubit violation; call a use case |
+| A Cubit/Bloc depending on another Cubit/Bloc | Hidden coupling; coordinate via `BlocListener` or `EventBus` domain events |
+| `emit` after `await` without an `isClosed` check | Throws `StateError` once the Cubit is closed |
+| `default` / wildcard branch when switching over sealed state | Hides newly added variants; switches must be exhaustive |
+| `BlocObserver` logging states/events via `toString()` or fields | Writes plaintext and user content to logs; log `runtimeType` only **[C19]** |
+| Decrypted content left in Cubit state after lock/logout | Unnecessary in-memory retention; emit cleared state and close **[C20]** |
+| `hydrated_bloc` / `replay_bloc`, or Riverpod/GetX/signals | Not approved; `hydrated_bloc` persists state to disk outside the storage tiers **[C2]** |
+| `flutter_hooks` for shared, domain, or async data state | Hooks are for widget-local controllers only; use a Cubit/Bloc |
 | `BuildContext` in a use case or repository | Layer boundary violation; domain is pure Dart |
-| `await` inside `build()` | Causes rebuild loops; move async work to a provider |
+| `await` inside `build()` | Causes rebuild loops; move async work to a Cubit/Bloc |
 | `dynamic` without a justification comment | Defeats type safety |
 | Direct import of another feature's internal class | Bounded context violation; use `EventBus` or shared contract |
 | `DioException` past the repository layer | Map to `AppFailure` at the repository boundary |
 | `Dio` instantiated inside a feature | Singleton lives in `core/network/`; resolve via `get_it` |
 | Raw asset path string in widget code | Use `flutter_gen` accessors |
-| `StateProvider` usage | Not approved; use `NotifierProvider` |
 | Editing `*.g.dart` or `*.freezed.dart` | Overwritten on next build; regenerate instead |
 | Domain event missing any of the five dartdoc tags | Silent registry omission; CI violation |
 | Editing `docs/events/*.md` manually | Overwritten on next `build_runner` run |
@@ -679,7 +827,7 @@ Encountering any of these requires refactoring before proceeding.
 | Weakening crypto stack in `dev` or `staging` | Shortcuts routinely survive into production; crypto config must be flavour-identical **[C6]** |
 | Crypto known-answer vector with real-looking key bytes | Social engineering risk; use synthetic material with `// TEST ONLY` comment **[C11]** |
 | Third-party telemetry SDK in a privacy-goal project | Egresses device data to an external operator; use self-hosted/on-device, scrubbed **[C12]** |
-| `core/crypto` or `core/security` below the raised coverage bar | Highest-risk code; needs ≥95% line+branch and KAT vectors **[C13]** |
+| `core/crypto` or `core/security` below the raised coverage bar | Highest-risk code; needs ≥95% line+branch and KAT vectors for project-implemented primitives **[C13]** |
 | Logging `sessionRef` (or any opaque session ref) | Legal to hold/compare, illegal to log; resolves the C5/Appendix-B tension **[C14]** |
 | Opening a key-material-backed store outside the crypto Isolate | Leaks the derived store key onto the main heap **[C17]** |
 | Reimplementing a standard crypto protocol a vetted library already provides | Highest-risk path; reuse an audited implementation (e.g. libsignal), vendor + pin if unsupported **[C18]** |
@@ -700,11 +848,11 @@ Encountering any of these requires refactoring before proceeding.
 ///
 /// @event
 /// @dispatcher   CompleteTaskUseCase
-/// @consumers    TaskListNotifier, ProjectProgressService
+/// @consumers    TaskListCubit, ProjectProgressService
 /// @payload      taskId (String), projectId (String), completedAt (DateTime)
 /// @since        0.1.0
 @freezed
-class TaskCompleted with _$TaskCompleted {
+abstract class TaskCompleted with _$TaskCompleted {
   const factory TaskCompleted({
     required String taskId,
     required String projectId,
@@ -722,12 +870,12 @@ class TaskCompleted with _$TaskCompleted {
 ///
 /// @event
 /// @dispatcher   SecurityService
-/// @consumers    MessagingNotifier
+/// @consumers    MessagingCubit
 /// @payload      sessionRef (String — opaque internal reference),
 ///               brokenAt (DateTime)
 /// @since        0.1.0
 @freezed
-class RatchetStateBroken with _$RatchetStateBroken {
+abstract class RatchetStateBroken with _$RatchetStateBroken {
   const factory RatchetStateBroken({
     required String sessionRef,
     required DateTime brokenAt,
@@ -747,7 +895,7 @@ class RatchetChainKey {
       : _keyBytes = keyBytes;
 
   /// Opaque internal session reference — safe to compare and to carry in
-  /// event payloads, but MUST NOT be written to logs. See [C14].
+  /// event payloads, but MUST NOT be written to logs (constitution rule C14).
   final String sessionRef;
   final Uint8List _keyBytes;
 
@@ -774,7 +922,7 @@ class RatchetChainKey {
 /// [unitPrice] is captured at add-time and does not update if the product
 /// price changes later.
 @freezed
-class CartItem with _$CartItem {
+abstract class CartItem with _$CartItem {
   const factory CartItem({
     required String productId,
     required Money unitPrice,
@@ -820,14 +968,119 @@ Future<Result<Order>> fetchOrder(String orderId) async {
   try {
     final dto = await _remoteDataSource.getOrder(orderId);
     return right(_mapper.toDomain(dto));
-  } on DioException catch (e) {
-    return left(NetworkFailure(message: e.message));
-  } catch (e) {
+  } on DioException {
+    // Never forward e.message — it can carry URLs or payload detail [C3].
+    return left(const NetworkFailure());
+  } on Object {
     return left(const UnexpectedFailure());
   }
 }
 ```
 
+### Cubit, State, and Page/View
+
+```dart
+// presentation/bloc/task_list_state.dart
+/// The display state of the task list screen.
+@freezed
+sealed class TaskListState with _$TaskListState {
+  /// Before the first load is requested.
+  const factory TaskListState.initial() = TaskListInitial;
+
+  /// A load is in progress.
+  const factory TaskListState.loading() = TaskListLoading;
+
+  /// Tasks loaded successfully.
+  const factory TaskListState.loaded(List<Task> tasks) = TaskListLoaded;
+
+  /// Loading failed; carries an opaque [AppFailure] only (rule C3).
+  const factory TaskListState.failure(AppFailure failure) = TaskListFailure;
+}
+
+// presentation/bloc/task_list_cubit.dart
+/// Loads and exposes the current user's tasks.
+@injectable
+class TaskListCubit extends Cubit<TaskListState> {
+  TaskListCubit(this._getTasks) : super(const TaskListState.initial());
+
+  final GetTasksUseCase _getTasks;
+
+  /// Loads tasks and emits [TaskListLoading] then a result state.
+  Future<void> load() async {
+    emit(const TaskListState.loading());
+    final result = await _getTasks();
+    if (isClosed) return;
+    emit(result.match(TaskListState.failure, TaskListState.loaded));
+  }
+}
+
+// presentation/pages/task_list_page.dart
+/// Provides [TaskListCubit] to [TaskListView]; contains no rendering logic.
+class TaskListPage extends StatelessWidget {
+  const TaskListPage({super.key});
+
+  @override
+  Widget build(BuildContext context) => BlocProvider(
+        create: (_) => getIt<TaskListCubit>()..load(),
+        child: const TaskListView(),
+      );
+}
+
+/// Renders every [TaskListState] variant — exhaustive switch, no wildcard.
+class TaskListView extends StatelessWidget {
+  const TaskListView({super.key});
+
+  @override
+  Widget build(BuildContext context) =>
+      BlocBuilder<TaskListCubit, TaskListState>(
+        builder: (context, state) => switch (state) {
+          TaskListInitial() || TaskListLoading() => const TaskListSkeleton(),
+          TaskListLoaded(:final tasks) => TaskList(tasks: tasks),
+          TaskListFailure(:final failure) => FailureMessage(failure: failure),
+        },
+      );
+}
+```
+
+### Cubit Test
+
+```dart
+blocTest<TaskListCubit, TaskListState>(
+  'emits [loading, failure] when the use case fails',
+  setUp: () => when(() => getTasks()).thenAnswer(
+    (_) async => left(const NetworkFailure()),
+  ),
+  build: () => TaskListCubit(getTasks),
+  act: (cubit) => cubit.load(),
+  expect: () => const [
+    TaskListState.loading(),
+    TaskListState.failure(NetworkFailure()),
+  ],
+);
+```
+
+### View Widget Test
+
+```dart
+class MockTaskListCubit extends MockCubit<TaskListState>
+    implements TaskListCubit {}
+
+testWidgets('renders the failure variant', (tester) async {
+  final cubit = MockTaskListCubit();
+  when(() => cubit.state)
+      .thenReturn(const TaskListState.failure(NetworkFailure()));
+
+  await tester.pumpApp( // test/shared/support helper: MaterialApp + l10n
+    BlocProvider<TaskListCubit>.value(
+      value: cubit,
+      child: const TaskListView(),
+    ),
+  );
+
+  expect(find.byType(FailureMessage), findsOneWidget);
+});
+```
+
 ---
 
-**Version**: 1.4.2-lean | **Base**: 1.4.2 | **Last Amended**: 2026-07-06
+**Version**: 2.0.0 | **Last Amended**: 2026-10-06

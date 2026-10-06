@@ -1,5 +1,5 @@
 # RQSM — Resilient Quantum-Signal Mesh
-### Secure Communication Blueprint · v5
+### Secure Communication Blueprint · v6
 
 <!--
   Change log
@@ -24,19 +24,30 @@
   |         | exists in the mesh scenarios), the RQSM envelope/MAC, and the      |
   |         | discovery-beacon HMAC layer. §18.4 rewritten to a reuse-vetted-    |
   |         | first policy reflecting the narrowed audit burden.                 |
+  | v6      | Aligned to Constitution v2.0.0: state management moved from   |
+  |         | Riverpod to `flutter_bloc` (Cubit-first). §14 rewritten;           |
+  |         | `TransportNotifier` → `TransportCubit`, `MessagingNotifier` →      |
+  |         | `MessagingCubit`; `get_it` is the single DI container. Consistency |
+  |         | fixes: ratchet-store wording follows the §5.4 encryption caveat;   |
+  |         | §18.1 session-reference rule matches C14; §19.5/§19.8 state the    |
+  |         | C13 crypto coverage bar; §20 EventBus dispatch matches C16;        |
+  |         | `SecurityService` described as a singleton infrastructure service  |
+  |         | (it owns the store handle), not a stateless domain service;        |
+  |         | conditional `sqflite_sqlcipher` justification added; Page/View     |
+  |         | split for `ChatPage`; `FakeTransportDriver` member order fixed.    |
+  |         | File renamed to the version-free `RQSM_Blueprint.md`.              |
 -->
 
-> **Constitution:** Flutter Constitution v1.4.2-lean (default resolution for all conflicts)
+> **Constitution:** Flutter Constitution v2.0.0 (default resolution for all conflicts)
 > **Architecture:** Feature-First Clean Architecture + Domain-Driven Design (FFCA + DDD)
-> **State management:** Riverpod — `NotifierProvider` (sync) · `AsyncNotifierProvider` (async)
-> **Generator:** `riverpod_generator` — `@riverpod` annotations on all providers
-> **UI convention:** Class-based `ConsumerWidget` only — no functional widgets
+> **State management:** `flutter_bloc` — Cubit by default; Bloc only for event concurrency or security-critical auditable flows. No state-management code generation
+> **UI convention:** Class-based widgets only (`StatelessWidget` / `StatefulWidget`, or `HookWidget` for widget-local controllers) bound to state via `BlocBuilder` / `BlocSelector` / `BlocListener` — no functional widgets
 > **Platforms:** Android · iOS · Linux
 > **Result type:** `fpdart` `Either<Failure, T>` via `Result<T>` typedef
-> **DI:** `get_it` + `injectable` — `get_it` owns infrastructure; Riverpod owns reactive UI state
+> **DI:** `get_it` + `injectable` — the single container; it constructs Cubits/Blocs, and `BlocProvider` only scopes their lifetime in the widget tree
 > **Events:** `EventBus` singleton via `get_it` — cross-feature communication only
 > **Security priority:** Security rules take precedence over constitution defaults where they conflict.
->   Constitution v1.4.0 absorbed these rules as C1–C11, so the constitution is now the single
+>   Constitution v1.4.0 absorbed these rules as C1–C11 (later versions extend the series through C20), so the constitution is now the single
 >   source of authority. The **[SECURITY OVERRIDE]** markers below are retained as *citations* of
 >   the relevant C-rule, not as competing overrides — where a marker appears, it restates a
 >   constitution rule in project-specific terms rather than contradicting one.
@@ -49,15 +60,15 @@
 |---|---|---|
 | Framework | Flutter | — |
 | Architecture | FFCA + DDD | Feature-First, bounded contexts |
-| State management | Riverpod + `riverpod_generator` | `@riverpod` annotations throughout |
+| State management | `flutter_bloc` | Cubit-first; see §14 |
 | Primary protocol | XMPP via `moxxmpp` | Self-hosted Prosody or ejabberd |
 | Fallback protocols | WiFi Direct → BLE Mesh → Ultrasound → LoRa/SDR | Priority-ordered |
 | Security | `libsignal-client` (PQXDH · ML-KEM-1024, Double Ratchet, Sender Keys, Curve25519 identity) | Session/ratchet/group crypto and authentication via libsignal; custom layer confined to the P2P sealed sender and the envelope/discovery HMAC — see §4, §18.4 |
 | CRDT sync storage | `sql_crdt` | Justified addition — see §7.3 |
-| Ratchet state storage | Isar (dedicated isolated instance, encryption on) | Separate from main app Isar — see §5.4 encryption caveat |
+| Ratchet state storage | Dedicated isolated encrypted store | Separate from the main app store. Isar only if the pinned version provides at-rest encryption; otherwise SQLCipher or app-layer AEAD — see §5.4 caveat |
 | History storage | Encrypted local store (hardware-derived key) | Readable history at rest — see §5.8 |
 | Error typing | `fpdart` — `Either<Failure, T>` as `Result<T>` | — |
-| DI container | `get_it` + `injectable` | Providers resolve `get_it` at boundary |
+| DI container | `get_it` + `injectable` | Single container; constructs Cubits/Blocs (`@injectable`) |
 | Cross-feature events | `event_bus` | One singleton; no direct feature imports |
 | Secure storage | Platform-channel hardware keystore | Long-term wrapping key hardware-resident; derived keys are ephemeral in the Dart heap — see §5.4 |
 
@@ -72,6 +83,7 @@ The following packages are not in the constitution's approved stack and are just
 | `connectivity_plus` | Network reachability signal feeding `TransportSwitcher` and the `SignalQuality` observer (§3, §7). No approved-stack alternative. |
 | QR generate + scan (e.g. `qr_flutter` + `mobile_scanner`) | Level 0 out-of-band pairing and safety-number verification (§16). Camera-scanned QR is core to the verified-contact upgrade path. |
 | Local notifications (e.g. `flutter_local_notifications`) | Delivery of the privacy blueprint's granular notification controls. Content stays local; see §18.5 push-metadata caveat. |
+| `sqflite_sqlcipher` (conditional) | SQLCipher-backed encrypted store for the ratchet (§5.4), history (§5.8), and possibly CRDT (§7.3) stores, **only if** the pinned Isar version lacks at-rest encryption. Decide and record in the plan before the ratchet store is trusted. |
 | `flutter_rust_bridge` | FFI bridge binding `libsignal-client` (Rust) into Dart. Also the boundary that keeps key material in native memory where it can be zeroised (§18.4) — the Dart GC cannot. Digest-pinned per §18.2 M2. |
 | `sql_crdt` | SQLite-backed CRDT store with Hybrid Logical Clock semantics. Isar has no CRDT primitive; CRDT is a core architectural requirement for offline-first sync. |
 | `nearby_connections` | WiFi Direct / Multipeer Connectivity for Scenario 2 transport. No approved-stack alternative. |
@@ -122,7 +134,7 @@ The application operates across three distinct infrastructure privacy modes. The
 | **Strategy Pattern** | Encapsulates each transport protocol into an interchangeable `TransportDriver` |
 | **Driver-Plugin Architecture** | `MessagingRepository` delegates to a `TransportSwitcher` that holds an ordered list of `TransportDriver` implementations and selects the highest-priority available driver |
 | **Repository Pattern** | Abstracts the active transport (XMPP vs. P2P Mesh) from the Domain layer |
-| **Observer Pattern** | `ConnectivityPlus` + custom `SignalQuality` stream feed the `TransportNotifier`; domain events propagate changes via `EventBus` |
+| **Observer Pattern** | `ConnectivityPlus` + custom `SignalQuality` stream feed `TransportSwitcher`; driver changes propagate as domain events via `EventBus` to `TransportCubit` |
 | **Clean Architecture** | Domain `Message` entities are immutable, transport-agnostic, and pure Dart |
 | **Event-Driven** | Significant state changes emit domain events via `EventBus`; no direct cross-feature imports |
 
@@ -133,14 +145,14 @@ The following names are authoritative throughout this document and in all genera
 | Concept | Canonical Name |
 |---|---|
 | Holds driver list; selects active driver | `TransportSwitcher` |
-| Domain service; orchestrates libsignal (PQXDH, Double Ratchet, Sender Keys) + custom P2P sealed sender | `SecurityService` |
+| Security service (`core/security/`, `get_it` singleton); orchestrates libsignal (PQXDH, Double Ratchet, Sender Keys) + custom P2P sealed sender | `SecurityService` |
 | Publishes/fetches libsignal prekey bundles; async session establishment (§5.6) | `PrekeyService` |
 | Wraps libsignal Sender Keys — distribution, rotation (§5.7) | `GroupSessionService` |
 | Owns per-contact discovery secrets; blocking/revocation (§6.4) | `DiscoveryService` |
 | Encrypted readable-history persistence (§5.8) | `HistoryStore` |
 | Manages CRDT sync on peer discovery | `SyncEngine` |
-| Riverpod `Notifier` for transport state | `TransportNotifier` |
-| Generated Riverpod provider | `transportNotifierProvider` |
+| Cubit exposing transport state to the UI | `TransportCubit` |
+| Cubit exposing conversation/message state to the UI | `MessagingCubit` |
 | XMPP driver | `XmppTransportDriver` |
 | WiFi Direct driver | `WifiDirectTransportDriver` |
 | BLE Mesh driver | `BleMeshTransportDriver` |
@@ -149,7 +161,7 @@ The following names are authoritative throughout this document and in all genera
 
 ### 3.2 EventBus Integration
 
-The `EventBus` singleton is registered in `core/di/event_bus_module.dart` before any feature module initialises. Transport and security events are dispatched from use cases, domain services, or **infrastructure services registered in `get_it`** (e.g. `TransportSwitcher`, which lives in `data/transports/`) — never from presentation code. `TransportSwitcher` is an infrastructure service, not a domain service, so its dispatch of `TransportDriverSwitched` is explicitly permitted under the amended constitution EventBus rule (the intent of that rule is to keep dispatch out of the UI, not to bar infrastructure). Consumers are `Notifier`/`AsyncNotifier`s or domain services.
+The `EventBus` singleton is registered in `core/di/event_bus_module.dart` before any feature module initialises. Transport and security events are dispatched from use cases, domain services, or **infrastructure services registered in `get_it`** (e.g. `TransportSwitcher`, which lives in `data/transports/`) — never from presentation code. `TransportSwitcher` is an infrastructure service, not a domain service, so its dispatch of `TransportDriverSwitched` is explicitly permitted under the amended constitution EventBus rule (the intent of that rule is to keep dispatch out of the UI, not to bar infrastructure). Consumers are Cubits/Blocs or domain services.
 
 ```dart
 // core/di/event_bus_module.dart
@@ -161,18 +173,7 @@ abstract class EventBusModule {
 }
 ```
 
-Consumers register in `AsyncNotifier.build()` and cancel on dispose:
-
-```dart
-@override
-Future<TransportState> build() async {
-  final sub = getIt<EventBus>()
-      .on<TransportDriverSwitched>()
-      .listen(_onDriverSwitched);
-  ref.onDispose(sub.cancel);
-  return _initialState();
-}
-```
+Consumers subscribe in their constructor and cancel in `close()` — see `TransportCubit` in §14.
 
 ---
 
@@ -208,7 +209,7 @@ Built on top of `core/crypto/`. Orchestrates protocols. No Flutter imports. Pure
 - `GroupSession` — drives libsignal Sender Keys (distribution, rotation)
 - `SealedSender` — **split**: libsignal sealed sender in server-backed XMPP mode; the custom
   `BlindTrustToken` path in P2P/mesh where no certificate authority exists (§5.3, §7.2)
-- `SecurityService` — stateless domain service coordinating the above
+- `SecurityService` — coordinates the above. It owns the isolated ratchet-store handle (§5.4), so it is a `get_it` singleton infrastructure service, **not** a stateless domain service under the constitution's DDD rules; it holds no key material on the Dart heap (§18.4)
 - libsignal **store-trait implementations** (`SessionStore`, `IdentityKeyStore`, `PreKeyStore`,
   `SignedPreKeyStore`, `KyberPreKeyStore`, `SenderKeyStore`) backed by the encrypted store (§5.4)
 - `RatchetSessionRepository` interface — session-state persistence contract (implementation in `data/`)
@@ -456,7 +457,7 @@ Stealth discovery MUST support per-contact revocation. A beacon keyed on the sin
 
 ## 7. Transport Strategy — Scenario Fallback Chain
 
-`TransportSwitcher` (orchestrated by `TransportNotifier` via Riverpod) monitors `ConnectivityPlus` and a custom `SignalQuality` stream. Drivers are evaluated in priority order; the first driver where `isAvailable == true` is activated. Driver switches emit a `TransportDriverSwitched` domain event via `EventBus`.
+`TransportSwitcher` (an infrastructure service in `data/transports/`; its state is surfaced to the UI by `TransportCubit`, §14) monitors `ConnectivityPlus` and a custom `SignalQuality` stream. Drivers are evaluated in priority order; the first driver where `isAvailable == true` is activated. Driver switches emit a `TransportDriverSwitched` domain event via `EventBus`.
 
 ### 7.1 Platform Support Matrix
 
@@ -639,12 +640,12 @@ Every significant state change emits an immutable `freezed` domain event dispatc
 ///
 /// @event
 /// @dispatcher   TransportSwitcher
-/// @consumers    TransportNotifier, SyncEngine
+/// @consumers    TransportCubit, SyncEngine
 /// @payload      previousDriverName (String), activeDriverName (String),
 ///               switchedAt (DateTime), reason (TransportSwitchReason)
 /// @since        0.1.0
 @freezed
-class TransportDriverSwitched with _$TransportDriverSwitched {
+abstract class TransportDriverSwitched with _$TransportDriverSwitched {
   const factory TransportDriverSwitched({
     required String previousDriverName,
     required String activeDriverName,
@@ -656,7 +657,7 @@ class TransportDriverSwitched with _$TransportDriverSwitched {
 
 ```dart
 /// Fired when [SecurityService] detects a missing or corrupted
-/// ratchet session that cannot be recovered from the isolated Isar store.
+/// ratchet session that cannot be recovered from the isolated ratchet store.
 ///
 /// The affected session is identified only by an opaque internal reference —
 /// no peer identity, key material, or session content is included.
@@ -664,12 +665,12 @@ class TransportDriverSwitched with _$TransportDriverSwitched {
 ///
 /// @event
 /// @dispatcher   SecurityService
-/// @consumers    MessagingNotifier
+/// @consumers    MessagingCubit
 /// @payload      sessionRef (String — opaque internal reference),
 ///               brokenAt (DateTime)
 /// @since        0.1.0
 @freezed
-class RatchetStateBroken with _$RatchetStateBroken {
+abstract class RatchetStateBroken with _$RatchetStateBroken {
   const factory RatchetStateBroken({
     required String sessionRef,
     required DateTime brokenAt,
@@ -684,11 +685,11 @@ class RatchetStateBroken with _$RatchetStateBroken {
 ///
 /// @event
 /// @dispatcher   SyncEngine
-/// @consumers    MessagingNotifier
+/// @consumers    MessagingCubit
 /// @payload      deltaCount (int), syncedAt (DateTime)
 /// @since        0.1.0
 @freezed
-class PeerSyncCompleted with _$PeerSyncCompleted {
+abstract class PeerSyncCompleted with _$PeerSyncCompleted {
   const factory PeerSyncCompleted({
     required int deltaCount,
     required DateTime syncedAt,
@@ -700,7 +701,7 @@ class PeerSyncCompleted with _$PeerSyncCompleted {
 
 ## 12. Dependency Injection
 
-`get_it` + `injectable` own infrastructure. Riverpod owns reactive UI state. Providers resolve `get_it` dependencies at the provider boundary — there is no duplication between the two containers.
+`get_it` + `injectable` is the single DI container. It owns infrastructure and also constructs Cubits/Blocs (annotated `@injectable`, a new instance per resolution). `BlocProvider` performs no DI — it only scopes a Cubit's lifetime to a widget subtree (§14).
 
 ```dart
 // lib/core/di/security_module.dart
@@ -808,54 +809,99 @@ abstract class TransportDriver {
 
 ---
 
-## 14. Riverpod State Architecture
+## 14. State Architecture (`flutter_bloc`)
 
-All providers use `@riverpod` annotations from `riverpod_generator`. `StateNotifierProvider` is not used — use `NotifierProvider` (sync) or `AsyncNotifierProvider` (async). All provider declarations are top-level in `presentation/providers/` files.
+State management follows the constitution's STATE section: **Cubit by default**; a Bloc only where event concurrency control or an auditable event log is needed. Cubits/Blocs live in `presentation/bloc/`, are thin (they call use cases and map `Result<T>` to state — no business logic, no direct repository or `TransportSwitcher` calls), and are constructed by `get_it` and scoped with `BlocProvider(create: ...)`.
 
-### Transport Provider
+RQSM-specific application of those rules:
+
+| Concern | Rule |
+|---|---|
+| Which type | `TransportCubit`, `MessagingCubit`: Cubit. Contact verification / key-change handling and the Panic Mode flow: **Bloc** (security-critical; explicit event log). Typing indicators and search: Bloc with `bloc_concurrency` transformers |
+| Sensitive state **[C20]** | `MessagingCubit` and any Cubit holding decrypted content or contact identities MUST emit a cleared state and close on app lock / logout. No key material, `EncryptedEnvelope` fields, or `sessionRef` in any presentation state |
+| Observation **[C19]** | `AppBlocObserver` logs only Cubit/state/event `runtimeType`s — never `toString()` — and is bound by the §18.1 blocklist |
+| Rebuild scope | Message lists and typing indicators use `BlocSelector` / `buildWhen` |
+
+### Transport Cubit
 
 ```dart
-// lib/features/<feature>/presentation/providers/transport_provider.dart
-part 'transport_provider.g.dart';
+// lib/features/messaging/presentation/bloc/transport_cubit.dart
 
-/// Manages the active [TransportDriver] selection and responds to
-/// connectivity and signal-quality changes.
+/// Exposes the active [TransportDriver]'s display name to the UI.
 ///
-/// Dispatches [TransportDriverSwitched] via [EventBus] on every driver change.
-@riverpod
-class TransportNotifier extends _$TransportNotifier {
-  @override
-  TransportState build() {
-    final switcher = getIt<TransportSwitcher>();
-
-    // Subscribe to driver-switched events dispatched by TransportSwitcher.
-    final sub = getIt<EventBus>()
-        .on<TransportDriverSwitched>()
-        .listen((event) {
-      state = state.copyWith(activeDriverName: event.activeDriverName);
-    });
-    ref.onDispose(sub.cancel);
-
-    return TransportState(activeDriverName: switcher.activeDriver.displayName);
+/// Reflects [TransportDriverSwitched] events dispatched by [TransportSwitcher];
+/// it never selects or switches drivers itself.
+@injectable
+class TransportCubit extends Cubit<TransportState> {
+  TransportCubit(this._getActiveTransport, EventBus bus)
+      : super(const TransportState.unknown()) {
+    _sub = bus.on<TransportDriverSwitched>().listen(
+          (event) => emit(TransportState.active(event.activeDriverName)),
+        );
   }
+
+  final GetActiveTransportUseCase _getActiveTransport;
+  late final StreamSubscription<TransportDriverSwitched> _sub;
+
+  /// Reads the currently active driver; called once when provided.
+  void load() => emit(
+        _getActiveTransport().match(
+          (_) => const TransportState.unknown(),
+          TransportState.active,
+        ),
+      );
+
+  @override
+  Future<void> close() async {
+    await _sub.cancel();
+    return super.close();
+  }
+}
+
+// transport_state.dart — sealed union: TransportUnknown | TransportActive
+@freezed
+sealed class TransportState with _$TransportState {
+  /// No driver is active, or the active driver could not be read.
+  const factory TransportState.unknown() = TransportUnknown;
+
+  /// [driverName] is the safe [TransportDriver.displayName].
+  const factory TransportState.active(String driverName) = TransportActive;
 }
 ```
 
 ### UI Layer — Transport-Agnostic Chat Screen
 
 ```dart
-// lib/features/<feature>/presentation/pages/chat_page.dart
-class ChatPage extends ConsumerWidget {
+// lib/features/messaging/presentation/pages/chat_page.dart
+
+/// Provides [TransportCubit] to [ChatView]; contains no rendering logic.
+class ChatPage extends StatelessWidget {
   const ChatPage({super.key});
 
   @override
-  Widget build(BuildContext context, WidgetRef ref) {
+  Widget build(BuildContext context) => BlocProvider(
+        create: (_) => getIt<TransportCubit>()..load(),
+        child: const ChatView(),
+      );
+}
+
+/// Renders the chat screen; widget tests pump this with a mock Cubit.
+class ChatView extends StatelessWidget {
+  const ChatView({super.key});
+
+  @override
+  Widget build(BuildContext context) {
     final l10n = AppLocalizations.of(context)!;
-    final state = ref.watch(transportNotifierProvider);
 
     return Scaffold(
       appBar: AppBar(
-        title: Text(l10n.resilientChatTitle(state.activeDriverName)),
+        title: BlocBuilder<TransportCubit, TransportState>(
+          builder: (context, state) => switch (state) {
+            TransportUnknown() => Text(l10n.transportUnknownTitle),
+            TransportActive(:final driverName) =>
+              Text(l10n.resilientChatTitle(driverName)),
+          },
+        ),
       ),
       body: const MessageListView(),
     );
@@ -904,6 +950,7 @@ lib/
 │       │   ├── repositories/         ← MessagingRepository interface (domain contract)
 │       │   ├── services/             ← Stateless domain services (no state held)
 │       │   └── usecases/             ← One file per use case; one responsibility each
+│       │                                 (e.g. GetActiveTransportUseCase)
 │       │
 │       ├── data/
 │       │   ├── datasources/
@@ -917,10 +964,10 @@ lib/
 │       │   └── di/                   ← MessagingModule (@module injectable)
 │       │
 │       └── presentation/
-│           ├── pages/                ← ChatPage, ConversationListPage (ConsumerWidgets)
+│           ├── pages/                ← ChatPage/ChatView, ConversationListPage/View
 │           ├── widgets/              ← MessageListView, PanicModeBanner, etc.
-│           └── providers/            ← Top-level @riverpod declarations only
-│                                         (transport_provider.dart, sync_provider.dart)
+│           └── bloc/                 ← Cubits/Blocs + state/event files
+│                                         (transport_cubit.dart, messaging_cubit.dart)
 │
 ├── l10n/                    ← *.arb translation files (app_en.arb, etc.)
 └── main.dart
@@ -939,7 +986,7 @@ test/
 │       └── steps/           ← Feature-local step definitions
 ├── shared/
 │   ├── common_steps/        ← Steps used by 2+ features
-│   ├── support/             ← FakeTransportDriver, ProviderScope helpers
+│   ├── support/             ← FakeTransportDriver, MockCubit/MockBloc helpers
 │   └── fixtures/            ← Test data — synthetic key material only (see §19.6)
 └── runners/                 ← Thin BDD test runners
 ```
@@ -968,7 +1015,7 @@ Three flavours: `dev`, `staging`, `prod`. Each loads a matching `.env` file via 
 
 > Panic Mode is a safety-critical, hard-to-reverse UI path; it must be verifiable in a non-prod build. It is enabled in `staging` (which is crypto-identical to prod) and disabled only in `dev`, where crash reporting and analytics are also sandboxed.
 
-> **Crypto parity rule — [SECURITY OVERRIDE]:** Cryptographic configuration, key derivation paths, and encryption settings are **identical across all three flavours**. Only feature availability differs. It is absolutely prohibited to use hardcoded test keys, disable Isar encryption, skip certificate validation, or weaken any part of the security stack in dev or staging builds. Shortcuts introduced in dev have a known history of surviving into production.
+> **Crypto parity rule — [SECURITY OVERRIDE]:** Cryptographic configuration, key derivation paths, and encryption settings are **identical across all three flavours**. Only feature availability differs. It is absolutely prohibited to use hardcoded test keys, disable at-rest store encryption, skip certificate validation, or weaken any part of the security stack in dev or staging builds. Shortcuts introduced in dev have a known history of surviving into production.
 
 `.env.dev`, `.env.staging`, and `.env.prod` are all in `.gitignore`. Only `.env.example` with placeholders is committed.
 
@@ -982,7 +1029,7 @@ All logging uses the `AppLogger` `get_it` singleton. The following must **never 
 
 - Raw key bytes (`Uint8List` containing key material of any kind)
 - Ratchet chain keys, message keys, or root keys
-- Session references that could link to a peer identity
+- Session references of any kind — including the opaque `sessionRef`, which may be held, compared, and carried in event payloads but never logged (constitution C14)
 - Peer identity key fingerprints or public keys
 - Plaintext message content
 - Sealed Sender tokens or Blind Trust Token values
@@ -990,6 +1037,8 @@ All logging uses the `AppLogger` `get_it` singleton. The following must **never 
 - Transport metadata: IP addresses, BLE MAC addresses, HMAC discovery values, CRDT node IDs
 
 If a log call requires any of the above to be meaningful, the log call should be omitted. Prefer opaque error codes and driver display names in all log output.
+
+The blocklist also binds `AppBlocObserver` (constitution C19): it logs only Cubit/Bloc, state, and event `runtimeType`s, never their contents.
 
 ### 18.2 OWASP Mobile Top 10
 
@@ -1066,11 +1115,11 @@ Implementation must not begin until both the plan and `.feature` files are accep
 /// Injects inbound [Packet]s via [inject] and records all [send] calls
 /// for assertion. [available] can be toggled to simulate driver failover.
 class FakeTransportDriver implements TransportDriver {
+  FakeTransportDriver({this.available = true});
+
   final _controller = StreamController<Packet>.broadcast();
   final List<EncryptedEnvelope> sentEnvelopes = [];
   bool available;
-
-  FakeTransportDriver({this.available = true});
 
   @override
   Stream<Packet> get onPacketReceived => _controller.stream;
@@ -1117,12 +1166,15 @@ class FakeTransportDriver implements TransportDriver {
 | History store (§5.8) | Plaintext written on receipt; delete removes from store; encrypted at rest under hardware-derived key |
 | `SealedSender` | BTT generation and verification; nonce single-use replay rejection; invitation payload validation (all 6 fields) |
 | Failure subtypes | Assert no sensitive fields in any `CryptoFailure`, `RatchetFailure`, or `TransportFailure` |
+| Cubits/Blocs (§14) | `blocTest` for every method/event incl. failure path; `TransportCubit` reflects `TransportDriverSwitched` and cancels its subscription on `close()`; `MessagingCubit` clears decrypted content on lock/logout (C20) |
 
-Use `mocktail` — no real network, radio, or database calls.
+Use `mocktail` — no real network, radio, or database calls. Widget tests replace Cubits/Blocs with `MockCubit` / `MockBloc` from `bloc_test`.
 
 ### 19.5 Coverage Gate
 
 Domain and data layers: ≥ 80% line coverage measured by `flutter test --coverage`. PRs reducing domain/data coverage below 80% must not be merged.
+
+`core/crypto/` and `core/security/` must meet the constitution's raised bar (C13): ≥ 95% line **and** branch coverage. For RQSM this applies to the binding layer, the libsignal store-trait implementations, and all retained custom crypto; known-answer vectors are required for the retained custom constructions (§18.4).
 
 ### 19.6 Crypto Test Fixture Safety
 
@@ -1141,6 +1193,7 @@ All of the following must pass in CI before any PR is merged:
 - `dart analyze` → zero issues
 - `dart doc . 2>&1 | grep -i warning` → no output
 - `flutter test --coverage` → ≥ 80% line coverage on domain + data layers
+- `core/crypto/` + `core/security/` → ≥ 95% line and branch coverage (C13, §19.5)
 - All three test layers pass (unit, widget, integration stubs)
 - No unapproved packages in `pubspec.yaml` diff (any RQSM package addition requires the justification table in §1 to be updated in the same PR)
 
@@ -1152,17 +1205,17 @@ All of the following must pass in CI before any PR is merged:
 |---|---|
 | **Read constitution first** | Read the Flutter Constitution in full before producing any plan or code |
 | **BDD first** | Author Gherkin `.feature` files during planning. Do not begin implementation until plan and `.feature` files are accepted |
-| **Build order** | `core/crypto/` (libsignal FFI bindings) → `core/security/` (store-trait impls → session/group orchestration over libsignal → custom P2P envelope/sealed-sender §5.2/§5.3 → prekey establishment §5.6 → history store §5.8) → `TransportDriver` interface → individual drivers → `SyncEngine` → DI modules → `presentation/providers/` → `presentation/` pages/widgets |
-| **UI components** | `class [Feature]Page extends ConsumerWidget` — no functional widgets |
-| **Providers** | `@riverpod` on all providers. `NotifierProvider` for sync state; `AsyncNotifierProvider` for async. Top-level in `presentation/providers/` only — never nested in widget classes |
-| **No `StateNotifierProvider`** | Not approved. Use `NotifierProvider` with `@riverpod` |
+| **Build order** | `core/crypto/` (libsignal FFI bindings) → `core/security/` (store-trait impls → session/group orchestration over libsignal → custom P2P envelope/sealed-sender §5.2/§5.3 → prekey establishment §5.6 → history store §5.8) → `TransportDriver` interface → individual drivers → `SyncEngine` → DI modules → `presentation/bloc/` (Cubits/Blocs) → `presentation/` pages/widgets |
+| **UI components** | Class-based `StatelessWidget` / `StatefulWidget` (`HookWidget` only for widget-local controllers) — no functional widgets. Bind state with `BlocBuilder` / `BlocSelector`; side effects only in `BlocListener` |
+| **State management** | `flutter_bloc`, Cubit by default; Bloc only for event concurrency or security-critical auditable flows (§14). Thin Cubits in `presentation/bloc/`, constructed by `get_it` (`@injectable`), provided with `BlocProvider(create: ...)` |
+| **Sensitive presentation state** | Cubits holding decrypted content or contact identities clear and close on lock/logout (C20). No key material, envelope fields, or `sessionRef` in any state. `AppBlocObserver` logs `runtimeType` only (C19) |
 | **Error handling** | `Result<T>` (`fpdart Either<AppFailure, T>`) for every operation that may fail. No thrown exceptions across layer boundaries |
 | **`freezed` carve-out** | Do not apply `freezed` to classes holding raw key material in `core/crypto/` or `core/security/`. Implement `toString()` manually returning `'[SecuritySensitive — contents withheld]'` |
 | **No DTO for crypto** | No `data/models/` DTO for any class in `core/crypto/` or `core/security/`. No `toJson()`/`fromJson()` on key-material classes |
 | **Reuse-vetted-first** | Do not reimplement session/ratchet/group/sealed-sender crypto — use `libsignal-client` (§18.4, C18). Custom crypto is confined to the P2P envelope/MAC, P2P sealed sender/BTT, and discovery HMAC |
 | **Crypto imports** | `libsignal-client` bindings and raw crypto primitives imported only inside `lib/core/crypto/`. Any import elsewhere is a violation |
 | **Isolates for crypto** | libsignal holds key material in native memory; the encrypted store is opened/accessed in a dedicated crypto `Isolate` — not on the main thread (§5.1) |
-| **EventBus dispatch** | Domain events dispatched from use cases or domain services only — never from presentation code |
+| **EventBus dispatch** | Domain events dispatched from use cases, domain services, or infrastructure services registered in `get_it` (e.g. `TransportSwitcher`, C16) — never from presentation code, including Cubits/Blocs |
 | **Security event consumers** | Adding a consumer to `RatchetStateBroken` or any security-critical event requires a security review note in the PR description |
 | **Logging** | `AppLogger` singleton only. Never log any item from the blocklist in §18.1 |
 | **Localisation** | All user-facing strings via `AppLocalizations` — no raw string literals in widget code |
@@ -1176,4 +1229,4 @@ All of the following must pass in CI before any PR is merged:
 | **Platform hardening** | At-rest stores excluded from OS backup; `FLAG_SECURE` on sensitive screens (§18.5) |
 | **Class naming** | Canonical names from §3.1 exactly. No abbreviations or aliases in production code |
 | **Test stub** | Implement `FakeTransportDriver` before writing any widget test |
-| **After provider/event/asset changes** | Run `dart run build_runner build --delete-conflicting-outputs`. Commit regenerated `docs/events/<feature>.md` in the same PR |
+| **After `freezed` / `injectable` / event / asset changes** | Run `dart run build_runner build --delete-conflicting-outputs`. Commit regenerated `docs/events/<feature>.md` in the same PR |

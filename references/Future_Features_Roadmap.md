@@ -8,7 +8,7 @@
 > [`specs/001-secure-private-chat/spec.md`](../specs/001-secure-private-chat/spec.md). The MVP is
 > internet-first and single-device. Each section below is a candidate for its own future feature
 > specification. The two blueprints remain authoritative for mechanisms:
-> `Secure_Communication_Blueprint.md` (RQSM) and `Privacy_MentalHealth_Blueprint.md`.
+> `RQSM_Blueprint.md` (secure communication) and `FlowChat_Privacy_MentalHealth_Blueprint.md`.
 
 ---
 
