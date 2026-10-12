@@ -7,3 +7,6 @@ feature.json
 
 # Per-machine extension config overrides.
 extensions/*/local-config.yml
+
+# Local audit log written by the superpowers-bridge guard.
+bridge-events.jsonl
