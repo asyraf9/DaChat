@@ -1,5 +1,5 @@
 # RQSM — Resilient Quantum-Signal Mesh
-### Secure Communication Blueprint · v6
+### Secure Communication Blueprint · v7
 
 <!--
   Change log
@@ -36,9 +36,19 @@
   |         | conditional `sqflite_sqlcipher` justification added; Page/View     |
   |         | split for `ChatPage`; `FakeTransportDriver` member order fixed.    |
   |         | File renamed to the version-free `RQSM_Blueprint.md`.              |
+  | v7      | Aligned to `registration-migration-blueprint.md` v1.1:             |
+  |         | hybrid master identity (Curve25519 + ML-DSA-87, dual signatures,   |
+  |         | derived from a recovery seed, hardware-wrapped) replaces classical-|
+  |         | only authentication; libsignal Triple Ratchet (SPQR) adopted from  |
+  |         | v1; connection-first contact establishment (QR / single-use link)  |
+  |         | replaces username lookup and server-first prekey trust; §9         |
+  |         | registration is open and key-based (verification-method table     |
+  |         | withdrawn); MAM removed in all modes (no server archive); §5.5     |
+  |         | device loss uses recovery-phrase restore; §16 rewritten; M10 and   |
+  |         | §18.4 audit scope updated. Roadmap §7 (ML-DSA) adopted.            |
 -->
 
-> **Constitution:** Flutter Constitution v2.0.0 (default resolution for all conflicts)
+> **Constitution:** Flutter Constitution v2.1.0 (default resolution for all conflicts); identity and registration topics follow `registration-migration-blueprint.md`
 > **Architecture:** Feature-First Clean Architecture + Domain-Driven Design (FFCA + DDD)
 > **State management:** `flutter_bloc` — Cubit by default; Bloc only for event concurrency or security-critical auditable flows. No state-management code generation
 > **UI convention:** Class-based widgets only (`StatelessWidget` / `StatefulWidget`, or `HookWidget` for widget-local controllers) bound to state via `BlocBuilder` / `BlocSelector` / `BlocListener` — no functional widgets
@@ -63,7 +73,7 @@
 | State management | `flutter_bloc` | Cubit-first; see §14 |
 | Primary protocol | XMPP via `moxxmpp` | Self-hosted Prosody or ejabberd |
 | Fallback protocols | WiFi Direct → BLE Mesh → Ultrasound → LoRa/SDR | Priority-ordered |
-| Security | `libsignal-client` (PQXDH · ML-KEM-1024, Double Ratchet, Sender Keys, Curve25519 identity) | Session/ratchet/group crypto and authentication via libsignal; custom layer confined to the P2P sealed sender and the envelope/discovery HMAC — see §4, §18.4 |
+| Security | `libsignal-client` (PQXDH · ML-KEM-1024, Triple Ratchet = Double Ratchet + SPQR, Sender Keys) + hybrid identity (Curve25519 + ML-DSA-87, dual-signed) | Session/ratchet/group crypto and authentication via libsignal; custom layer confined to the P2P sealed sender and the envelope/discovery HMAC — see §4, §18.4 |
 | CRDT sync storage | `sql_crdt` | Justified addition — see §7.3 |
 | Ratchet state storage | Dedicated isolated encrypted store | Separate from the main app store. Isar only if the pinned version provides at-rest encryption; otherwise SQLCipher or app-layer AEAD — see §5.4 caveat |
 | History storage | Encrypted local store (hardware-derived key) | Readable history at rest — see §5.8 |
@@ -78,7 +88,9 @@ The following packages are not in the constitution's approved stack and are just
 
 | Package | Justification |
 |---|---|
-| `libsignal-client` (vendored, pinned; bound via `flutter_rust_bridge`) | Signal's own Rust implementation of PQXDH (ML-KEM-1024 + X25519), the Double Ratchet, Sender Keys, sealed sender, and Curve25519 (XEd25519) identity/signatures. Replaces the former custom protocol stack, `mlkem_native`, and the ML-DSA layer. **Not supported for third-party reuse and has no official Dart binding**, so it is vendored at a pinned commit and bound via `flutter_rust_bridge`; the pin is digest-verified per §18.2 M2. Reuse-vetted-first rationale in §18.4. |
+| `libsignal-client` (vendored, pinned; bound via `flutter_rust_bridge`) | Signal's own Rust implementation of PQXDH (ML-KEM-1024 + X25519), the Triple Ratchet (Double Ratchet + SPQR), Sender Keys, sealed sender, and Curve25519 (XEd25519) signatures. Replaces the former custom protocol stack and `mlkem_native`. **Not supported for third-party reuse and has no official Dart binding**, so it is vendored at a pinned commit and bound via `flutter_rust_bridge`; the pin is digest-verified per §18.2 M2. Reuse-vetted-first rationale in §18.4. |
+| ML-DSA implementation (vetted; chosen in the plan, bound through the same native boundary) | ML-DSA-87 keypair and dual signatures for the hybrid master identity (§5.1, registration blueprint R2.1a/R2.4a). libsignal provides no ML-DSA. Must be an audited implementation; it is never hand-written (C18). |
+| BIP39-style mnemonic / seed derivation (vetted) | Recovery seed and mnemonic from which the master identity is derived (registration blueprint R2.1, R2.2, R3.1). |
 | `moxxmpp` | XMPP client library. Required for the primary transport protocol. No approved-stack alternative. |
 | `connectivity_plus` | Network reachability signal feeding `TransportSwitcher` and the `SignalQuality` observer (§3, §7). No approved-stack alternative. |
 | QR generate + scan (e.g. `qr_flutter` + `mobile_scanner`) | Level 0 out-of-band pairing and safety-number verification (§16). Camera-scanned QR is core to the verified-contact upgrade path. |
@@ -117,9 +129,9 @@ The application operates across three distinct infrastructure privacy modes. The
 
 | Mode | Data Lives On | Main Server Observes | Identity |
 |---|---|---|---|
-| **Default Chat** | Main XMPP server | Message routing metadata; sender and recipient identities | Main server username |
-| **Private Server Chat** | External XMPP server | An opaque sealed blob was delivered **to a known recipient account**; approximate timing and payload size. Sender identity and content are blind. | Same username; channel is opaque |
-| **Pure E2EE** | No server-side persistence | An opaque sealed blob was delivered **to a known recipient account**; approximate timing and payload size | Same username |
+| **Default Chat** | Main XMPP server | Message routing metadata; sender and recipient identities (as identity public keys, never human-readable names) | Master identity key |
+| **Private Server Chat** | External XMPP server | An opaque sealed blob was delivered **to a known recipient account**; approximate timing and payload size. Sender identity and content are blind. | Same master identity key; channel is opaque |
+| **Pure E2EE** | No server-side persistence | An opaque sealed blob was delivered **to a known recipient account**; approximate timing and payload size | Same master identity key |
 
 > **"Zero knowledge" qualification:** "Private Server Chat" and "Pure E2EE" modes are *sender-anonymous and content-blind* — not event-blind and not recipient-anonymous. Any server that *delivers* a message must know the recipient account to route to it: the XMPP `to` attribute remains even when `from` is replaced by a relay token (§7.2, Scenario 1). Sealed sender conceals the sender and the content; it does not conceal that a delivery to a given recipient occurred, nor its timing and size. Users whose threat model requires concealing the existence of a communication channel should treat sealed sender as a content protection mechanism, not a traffic concealment mechanism.
 
@@ -251,19 +263,33 @@ construction**; call libsignal.
 
 - **Classical leg:** X25519 Diffie-Hellman (libsignal)
 - **PQ leg:** ML-KEM-1024 (libsignal's PQXDH parameter — do not deviate from the vetted set)
-- **Ratchet root:** libsignal Double Ratchet initialised from `SS`
-- **Identity / signatures:** classical **Curve25519 / XEd25519** (libsignal). ML-DSA is **not** used
-  — authentication is classical, matching Signal (see §18.2 M10 for the deliberate scope of this).
-  A scoped future option — a supplementary ML-DSA co-signature on the identity key only — is
-  tracked as deferred scope in `Future_Features_Roadmap.md` §7; RQSM stays fully on libsignal's
-  classical authentication until then.
+- **Ratchet:** libsignal **Triple Ratchet**: the Double Ratchet plus the Sparse Post-Quantum Ratchet
+  (SPQR), mixed by KDF, initialised from `SS` and enabled from v1 (registration blueprint §2.1 scope
+  note). Use libsignal's implementation; never hand-write SPQR.
+- **Identity / signatures — hybrid [v7]:** the master identity is a **Curve25519 (XEd25519) keypair
+  plus an ML-DSA keypair**, both derived from the user's recovery seed (registration blueprint
+  R2.1–R2.1b). Every signature made with the master identity MUST be a **dual signature** (XEd25519 +
+  ML-DSA over the same payload), and verifiers MUST require both (registration blueprint R2.4a). In
+  RQSM this covers:
+  - account authentication to a server (challenge–response);
+  - device authorization and migration triggers;
+  - signed-prekey and Kyber-prekey signatures — each prekey bundle carries an ML-DSA co-signature
+    that the client verifies *before* handing the bundle to libsignal;
+  - the identity material exchanged in a connection QR/link (§16), so verification covers both public
+    keys.
+- **ML-DSA parameter set:** ML-DSA-87 (NIST category 5, matching ML-KEM-1024) unless the plan
+  justifies ML-DSA-65 for size. The ML-DSA implementation MUST be a vetted library bound through the
+  same native boundary as libsignal (C8, C18). The dual-signature *wrapper* is RQSM code and in audit
+  scope (§18.4).
 
-> **Post-compromise-security scope:** the initial handshake gives post-quantum *confidentiality*.
-> Authentication is *classical* Curve25519, so RQSM does **not** provide post-quantum authentication
-> or non-repudiation — a future quantum adversary cannot retroactively forge past authentications,
-> which is why this is an accepted trade-off. Separately, the Double Ratchet's *ongoing* DH step is
-> classical X25519, so post-compromise recovery is not quantum-resistant either (see §18.2 M10).
-> Neither affects the confidentiality of a session whose handshake was not compromised.
+> **Post-quantum scope (v7):** handshake confidentiality is PQ (ML-KEM-1024 in PQXDH). Ongoing
+> confidentiality and post-compromise recovery are PQ via SPQR in the Triple Ratchet.
+> **Account-level authentication** (server sign-in, device authorization, migration, prekey bundle
+> co-signatures) is hybrid and requires forging *both* XEd25519 and ML-DSA. **Residual:** libsignal's
+> internal per-message and sealed-sender sender authentication still rests on Curve25519. A future
+> quantum adversary could therefore forge a *live* sealed-sender sender certificate, but cannot
+> substitute a contact's identity, because identity keys are bound by the dual-signed connection and
+> prekey material. State this residual honestly (§18.2 M10).
 
 > **Isolate / native-memory note:** libsignal holds session key material in native (Rust) memory,
 > off the Dart heap, which satisfies the bulk of the "minimise key lifetime in the main heap"
@@ -304,7 +330,7 @@ The outer header is the only part visible to any transport layer or relay. It re
 
 > **Envelope MAC:** the outer-header MAC is `HMAC-SHA-256` under a dedicated MAC key `HKDF(session_root, "rqsm-envelope-mac")`, separate from any encryption key. It authenticates the entire envelope (outer header ∥ inner header ∥ payload) and is verified before any decryption attempt.
 
-> **PQ object sizes vs bandwidth — session-token scheme:** with classical Curve25519 identity/signatures, the per-message sealed-sender certificate is now *small* (32-byte keys, 64-byte signatures) — the ML-DSA multi-KB overhead is gone. The large post-quantum objects are the **ML-KEM-1024** encapsulation key and ciphertext exchanged during **session establishment** (PQXDH prekey handshake, §5.6) — on the order of ~1.5 KB each — not per message. So the bandwidth pressure is concentrated at establishment over BLE (§7.2 Scenario 3) and acoustic (Scenario 4), and the session cannot be established over the lowest-bandwidth links. The **session-token scheme** still applies per-message: the sender's identity key and certificate are sent only on the first message of a session; subsequent messages carry a short opaque **session token**. Bandwidth-cost analysis per transport remains a required output of the driver specs (§7.2).
+> **PQ object sizes vs bandwidth — session-token scheme:** the per-message sealed-sender certificate stays *small* (libsignal's Curve25519 sender certificates: 32-byte keys, 64-byte signatures). The v7 hybrid identity's ML-DSA-87 keys (~2.6 KB) and co-signatures (~4.6 KB) travel only with connections and prekey bundles, never per message. The large post-quantum objects are the **ML-KEM-1024** encapsulation key and ciphertext exchanged during **session establishment** (PQXDH prekey handshake, §5.6) — on the order of ~1.5 KB each — not per message. So the bandwidth pressure is concentrated at establishment over BLE (§7.2 Scenario 3) and acoustic (Scenario 4), and the session cannot be established over the lowest-bandwidth links. The **session-token scheme** still applies per-message: the sender's identity key and certificate are sent only on the first message of a session; subsequent messages carry a short opaque **session token**. Bandwidth-cost analysis per transport remains a required output of the driver specs (§7.2).
 
 ### 5.3 Sealed Sender
 
@@ -316,12 +342,13 @@ The outer header is the only part visible to any transport layer or relay. It re
 
 In P2P mode there is no central server to verify sender certificates. Sealed Sender in P2P uses a **Blind Trust Token (BTT)** exchanged at Level 0 pairing (QR scan). The BTT lets the recipient confirm the sender's validity without the transport layer learning the sender's identity.
 
-The BTT is: `XEd25519_Sign(sender_IK_private, recipient_IK_public ∥ nonce)` — a classical Curve25519
-signature (libsignal identity keys; ML-DSA is not used, §5.1).
+The BTT is a **dual signature** by the sender's master identity (§5.1, registration blueprint R2.4a):
+`XEd25519_Sign ∥ ML-DSA_Sign (sender_master_private, recipient_IK_public ∥ nonce)`. It is exchanged once
+at pairing, so its ML-DSA size does not affect per-message bandwidth.
 
 On receipt, the recipient verifies the BTT against the sender's public key recovered from the Inner Header after decryption. The transport layer never sees either key.
 
-> **BTT nonce lifecycle and purpose:** the `nonce` is a 128-bit single-use random value, persisted by the recipient after first acceptance; any BTT replaying a seen nonce is silently rejected. Binding to `recipient_IK_public` makes the token non-transferable — it proves to *this* recipient that the holder controls `sender_IK_private`, without exposing the sender's identity to the transport. In P2P there is no server certificate to fall back on, so the BTT is the sole sender-authenticity proof; its security reduces to Ed25519/XEd25519 unforgeability and the secrecy of `sender_IK_private`. Authentication here is classical, not post-quantum (§18.2 M10).
+> **BTT nonce lifecycle and purpose:** the `nonce` is a 128-bit single-use random value, persisted by the recipient after first acceptance; any BTT replaying a seen nonce is silently rejected. Binding to `recipient_IK_public` makes the token non-transferable — it proves to *this* recipient that the holder controls `sender_IK_private`, without exposing the sender's identity to the transport. In P2P there is no server certificate to fall back on, so the BTT is the sole sender-authenticity proof; its security reduces to the unforgeability of *both* XEd25519 and ML-DSA, and the secrecy of the sender's master identity key. Authentication here is hybrid post-quantum (§18.2 M10).
 
 #### 5.3.2 Private Channel Establishment via Sealed Sender
 
@@ -336,7 +363,7 @@ The invitation payload must contain all of the following — none are optional:
 | `recipientKeyFingerprint` | `SHA-256(recipient_IK_public)` — binds invitation to Bob only; non-transferable |
 | `externalServerAddress` | Encrypted to the recipient using the **hybrid KEM** (ML-KEM-1024 + X25519) via libsignal PQXDH, not X25519 alone — these are among the most sensitive fields and must retain PQ confidentiality |
 | `externalServerCredentials` | Encrypted to the recipient using the **hybrid KEM** (ML-KEM-1024 + X25519) |
-| `senderSignature` | `XEd25519_Sign(sender_IK_private, nonce ∥ expiry ∥ recipientKeyFingerprint ∥ encrypted_address ∥ encrypted_credentials)` — classical Curve25519 signature |
+| `senderSignature` | Dual signature (XEd25519 + ML-DSA, §5.1) by the sender's master identity over `nonce ∥ expiry ∥ recipientKeyFingerprint ∥ encrypted_address ∥ encrypted_credentials` |
 
 **Handshake sequence:**
 
@@ -363,22 +390,48 @@ libsignal's Double Ratchet generates per-message ephemeral keys and expects the 
 
 - **Discovery rotation:** each per-contact discovery beacon `HMAC(DS_ab, TimeSlot)` (§6.4) rotates automatically each UTC hour. `TimeSlot = floor(UTC_epoch_seconds / 3600)`. No manual action required.
 - **Blocking a single contact:** deleting the pairwise discovery secret `DS_ab` revokes that one contact's ability to discover the device, with no effect on other contacts and no re-pairing (§6.4).
-- **Device loss or compromise:** The user initiates a re-pair via QR/prekey re-publication. A new long-term keypair is generated. Contacts must re-verify. On the re-pairing device, the old identity key is removed from all contact lists and every Blind Trust Token and discovery secret derived from it is deleted **locally**.
+- **Device loss (identity not compromised):** the user restores the master identity from the recovery phrase (registration blueprint R3.1). The identity keys are unchanged, so contacts see no identity change. Sessions are re-established from fresh prekeys, and message history is not restored.
+- **Identity compromise, or no recovery phrase:** the user creates a new identity (new recovery seed) and re-connects. Contacts see an identity change and must re-verify. On the re-pairing device, the old identity key is removed from all contact lists and every Blind Trust Token and discovery secret derived from it is deleted **locally**.
 - **No automatic revocation propagation:** There is no server push for identity revocation. A *contact's* device continues to trust the old identity key — including any BTT it already holds — until that contact re-verifies. The local deletion above does not propagate; only per-contact blocking (deleting `DS_ab`) is immediate, and it revokes discovery, not a contact's already-cached trust in the old key. This asymmetry is a known limitation of the serverless model and must appear in the app's security disclosure.
 
-### 5.6 Asynchronous Session Establishment — Prekey Bundles
+### 5.6 Connection-First Session Establishment — Connections + Prekey Bundles [v7]
 
-QR-only exchange (§16) cannot serve remote contacts who never meet in person — which is most of the family/workplace target context. The **default** establishment path is therefore **server-distributed libsignal prekey bundles** (`PreKeyBundle`), running libsignal's PQXDH against a fetched bundle.
+There is **no username directory and no server-side lookup** (registration blueprint §1.1). Two people
+first establish a **connection** that exchanges their identity public keys directly. Only then does the
+initiator fetch the other person's prekey bundle from the server and run PQXDH. The bundle is located by
+identity key, not by any human-readable handle.
 
-- **Published per user (libsignal `PreKeyBundle`):** a long-term Curve25519 identity key (`IK`), a signed prekey (`SignedPreKey`, rotated periodically, signed by `IK`), a **Kyber prekey** (ML-KEM-1024 encapsulation key, signed by `IK`), and a pool of one-time prekeys (classical + one-time Kyber prekeys) replenished by the client. All signatures are classical Curve25519 (§5.1) — no ML-DSA.
-- **Distribution:** the main XMPP server hosts the bundle. A session can be initiated while the contact is offline by fetching their bundle and running libsignal PQXDH (§5.1) against it.
-- **Trust state — `unverified`:** a contact established via a server-distributed bundle is `unverified`. The server can substitute a bundle (MITM), so an `unverified` contact carries a visible "not verified" marker in the UI until upgraded.
-- **Verification / upgrade to `verified`:** an out-of-band **QR comparison of the libsignal safety number** (§16) promotes the contact to `verified`. libsignal's `IdentityKeyStore` surfaces a key change; a `verified` contact whose key later changes MUST trigger a hard warning — never a silent re-trust.
-- **One-time prekey exhaustion:** if the one-time (classical or Kyber) prekey pool is depleted, the server serves a bundle without a one-time prekey; libsignal still establishes the session but the initial message loses one-time-prekey forward secrecy. Clients replenish eagerly to minimise this window.
+- **Connection (identity exchange):** by **in-person QR scan** (mutual, visual) or a **shareable link**
+  that is single-use, expires (default 24 h), and is revocable (registration blueprint R1.5, R1.5a). The
+  QR/link carries both identity public keys (or a binding hash of the ML-DSA key where QR capacity
+  requires it; see §16) plus an end-to-end-encrypted, self-asserted display name (R1.9).
+- **Published per user (libsignal `PreKeyBundle`):** the Curve25519 identity key (`IK`), a signed prekey
+  (`SignedPreKey`, rotated periodically), a **Kyber prekey** (ML-KEM-1024 encapsulation key), and a pool
+  of one-time prekeys (classical and Kyber) replenished by the client. Every prekey signature is dual
+  (XEd25519 + ML-DSA, §5.1). The client rejects any bundle whose identity keys differ from those received
+  in the connection, or whose ML-DSA co-signature fails.
+- **Distribution:** the user's server hosts the bundle. A session can be initiated while the contact is
+  offline.
+- **Trust states:**
+  - QR connection → `verified` (in-person, mutual visual confirmation).
+  - Link connection → `unverified`, unless the initiator required **ID confirmation** (code word or
+    video call, registration blueprint R1.6–R1.7a) and it succeeded. A later safety-code comparison
+    (§16) can also upgrade it.
+  - A contact whose identity later changes MUST trigger a hard warning (if `verified`) or a visible
+    notice (if `unverified`) — never a silent re-trust.
+- **One-time prekey exhaustion:** if the one-time pool is depleted, the server serves a bundle without a
+  one-time prekey; libsignal still establishes the session, with reduced first-message forward secrecy.
+  Clients replenish eagerly.
 
-> **Trust-anchor caveat:** server-distributed prekeys reintroduce the main server as the default key-distribution trust anchor — a deliberate usability trade-off. It does not weaken content confidentiality (still E2EE) but lets an active malicious server attempt a MITM on `unverified` contacts. The verification UX is the mitigation and MUST be prominent, not buried. This is the adversary "malicious main-server operator" in §1.1.
+> **Trust-anchor note (v7):** because identity keys arrive out of band in the connection, the server
+> can no longer substitute a contact's identity by swapping a bundle — the client pins the identity
+> from the connection. The residual MITM surface moves to the **link channel**: whoever intercepts or is
+> forwarded a link can complete that one connection. Single-use links bound that to one connection, and
+> optional ID confirmation is the defence (adversary "malicious main-server operator" is reduced to
+> delivery-metadata observation, §1.1).
 
-> **Future work — "super-secure" QR-only contacts:** a per-contact policy flag may pin a contact to QR-only establishment, refusing any server-distributed bundle for that identity, giving users who want maximum assurance a channel that never trusts the key-distribution server. Deferred to a later revision; the prekey path above is the v5 default.
+> **Future work — "super-secure" QR-only contacts:** a per-contact or per-user policy that accepts only
+> QR connections. Deferred to a later revision.
 
 ### 5.7 Group Messaging — Sender-Keys
 
@@ -484,7 +537,7 @@ Stealth discovery MUST support per-contact revocation. A beacon keyed on the sin
 - **Libraries:** `moxxmpp`, `libsignal-client`
 - **Mechanism:** XMPP over TLS. Session, ratchet, group, and **sealed sender** are handled by **libsignal** (§5.1) — the app does not reimplement them. Only the RQSM envelope/MAC and relay-token addressing are custom (§5.2, §18.4).
 - **Protocol:** OMEMO 2 (XEP-0384 adapted). In this server-backed mode, RQSM uses **libsignal's own sealed sender** (server-issued sender certificates) rather than the P2P Blind Trust Token (§5.3). The sender's true identity is sealed inside the payload and is invisible to the server. The `from` attribute in the XMPP XML stream is replaced by an ephemeral relay token — this requires a **server-side module** on Prosody/ejabberd (see server-component note below); it is not achievable with a stock server.
-  - **MAM scope:** Message Archive Management (server-side archiving) is used in **Default Chat mode only**. It is disabled for Private Server Chat and is inapplicable to Pure E2EE, which has no server-side persistence (§2). Enabling MAM in a sealed mode would contradict that mode's guarantee.
+  - **No server archive [v7]:** Message Archive Management (MAM) is **not used in any mode**. The server holds an encrypted message only until it is delivered to the recipient's device (offline storage), then deletes it. Chats are never archived server-side (registration blueprint §5.5). Readable history lives only in the on-device history store (§5.8).
 - **Server component:** sealed sender over XMPP requires a custom module to strip/replace `from` and to accept sealed blobs addressed by ephemeral recipient ID. This qualifies the privacy blueprint's "server swapped without app changes" claim: the *app* is server-agnostic, but sealed-sender behaviour depends on a deployed server module for each of Prosody and ejabberd. That module is a named deliverable, not stock configuration.
 - **Server routing:** Resolves the correct XMPP server per the hierarchical settings cascade (§8). Default is the main server; overridden at folder or chat level by external server configuration.
 
@@ -504,7 +557,7 @@ Stealth discovery MUST support per-contact revocation. A beacon keyed on the sin
 - **Libraries:** `flutter_reactive_ble` (sole BLE library)
 - **Mechanism:** GATT-based Flooding Mesh. Every received packet is re-broadcast to all known neighbours except the originating peer.
 - **Flood control:** Each packet carries an 8-byte `PacketID` and a 1-byte `TTL` (initial value: 7). Each relay decrements `TTL` and drops the packet at `TTL == 0`. An LRU cache of recent `PacketID`s prevents re-broadcasting packets already seen.
-  - **Cache sizing:** the cache must be sized against **fragment count**, not message count. A session-establishment handshake carrying the ML-KEM-1024 encapsulation key + ciphertext (§5.2) runs to several KB and fragments into ~20 × 180-byte chunks, each a distinct `PacketID`. A fixed 256-entry cache overflows after a handful of concurrent establishments and would then re-broadcast already-seen fragments — the storm it is meant to prevent. Size the cache as `expected_concurrent_messages × max_fragments_per_message` with headroom, and rely on the §5.2 session-token scheme to keep post-establishment messages small (single-digit fragments — classical Curve25519 identity is tiny). Document the chosen bound.
+  - **Cache sizing:** the cache must be sized against **fragment count**, not message count. A session-establishment handshake carrying the ML-KEM-1024 encapsulation key + ciphertext (§5.2) runs to several KB and fragments into ~20 × 180-byte chunks, each a distinct `PacketID`. A fixed 256-entry cache overflows after a handful of concurrent establishments and would then re-broadcast already-seen fragments — the storm it is meant to prevent. Size the cache as `expected_concurrent_messages × max_fragments_per_message` with headroom, and rely on the §5.2 session-token scheme to keep post-establishment messages small (single-digit fragments — per-message sender certificates stay Curve25519-sized; ML-DSA material travels only with connections and prekey bundles, §5.2). Document the chosen bound.
 - **Chunking:** Messages fragmented to 180-byte chunks to fit within negotiated BLE MTU. Fragment reassembly is keyed on a message ID plus fragment index.
 - **Stealth discovery:** BLE advertisement "Manufacturer Specific Data" carries per-contact `HMAC(DS_ab, TimeSlot)` truncated to 4 bytes (§6.4).
 - **Sealed Sender:** Sender identity is absent from all BLE advertisements and is revealed only inside the established E2EE tunnel.
@@ -569,23 +622,31 @@ When a chat is routed to an external server:
 
 ---
 
-## 9. Human Verification & Onboarding
+## 9. Registration & Onboarding [v7]
 
-Phone numbers are not used for verification. This avoids linkability to real-world identity and eliminates SIM-swap risk.
+Identity and registration are governed by `registration-migration-blueprint.md`; this section only
+records the RQSM-relevant consequences. The former verification-method table (invite-only, admin
+approval, email + CAPTCHA) is **withdrawn**: account registration is open, needs no invite, and collects
+no username, password, email, or phone number (registration blueprint R1.1, R2.3).
 
-Supported verification methods (configurable per server deployment):
+- **Registration = publishing public keys:** the client derives the hybrid master identity from a
+  recovery seed (§5.1), and registering on a server means publishing the identity public keys and the
+  prekey bundle (§5.6). Sign-in is a dual-signed challenge–response (R2.4, R2.4a).
+- **Main server first:** every user's first server is the main server, whose address is built into the
+  app. Additional servers are added later by domain with a fingerprint check (registration blueprint
+  §4.1).
+- **Invites gate groups, not accounts:** invites are recipient-bound credentials for entering a group,
+  delivered over an existing connection (registration blueprint R1.2a). They have nothing to do with
+  account creation.
+- **Abuse surface:** with no directory, a newly registered account can only reach people who gave it a
+  QR or link, so open registration does not create a spam channel by itself. Servers MAY rate-limit
+  registrations per network origin without collecting identifying data.
 
-| Method | Friction | Privacy | Notes |
-|---|---|---|---|
-| **Invite-only** | Low for recipient | High | Existing member generates a one-time link. Link expires after use or after a configurable TTL. |
-| **Admin approval** | Medium | High | Username + email registration with manual admin review before activation. |
-| **Email + CAPTCHA** | Low | Medium | Filters bots; lower friction. See retention rule below. |
-
-**Verification record retention rule:** For email + CAPTCHA verification, the email address and confirmation token must be discarded immediately after the account is confirmed. These records must not be stored alongside or linked to the user's identity key, username, or any persistent account record. Retaining them creates a permanent email → identity linkage that contradicts the no-phone-number privacy guarantee.
-
-**Key bootstrapping:** by default, contacts are established **asynchronously via server-distributed prekey bundles** (§5.6) — no in-person meeting is required, which is what makes remote family/workplace contacts usable. Such contacts start `unverified`. The QR scan (Level 0 pairing, §6, §16) is the **verification/upgrade** step: an out-of-band safety-number comparison that promotes a contact to `verified`, or a direct key exchange for users who never want to touch the prekey server (the future "super-secure" QR-only path, §5.6). Successful account verification (by any method in the table above) is required before a user can publish a prekey bundle, generate a QR code, or initiate a pairing. Verification gates access to key publication — it does not participate in the key agreement itself.
-
-> **Offline onboarding constraint:** account verification and prekey publication require reaching a server, so a brand-new account cannot be created during a total internet blackout. This is at odds with the "resilient" premise for *first-time* onboarding — resilience applies to **already-established** identities and their sessions, which continue to operate fully offline over the mesh transports. Two users who both want to onboard during a blackout must use the QR-only path (§16), which needs no server. State this limitation in the security disclosure.
+> **Offline onboarding constraint:** publishing keys requires reaching a server, so a brand-new account
+> cannot be created during a total internet blackout. Resilience applies to **already-established**
+> identities and their sessions, which continue over the mesh transports. Two users who both want to
+> onboard during a blackout must use the QR-only path (§16), which needs no server. State this
+> limitation in the security disclosure.
 
 ---
 
@@ -993,11 +1054,26 @@ test/
 
 ---
 
-## 16. Device Pairing
+## 16. Connections & Verification [v7]
 
-Contacts are established by default through **server-distributed prekey bundles** (§5.6), which do not require the two users to meet. QR-code out-of-band exchange (Level 0 — Verified) is the **verification/upgrade** path: it promotes a prekey-established contact from `unverified` to `verified` by out-of-band safety-number comparison, and is the basis of the future QR-only "super-secure" channel that never trusts the prekey server (§5.6). After any establishment, discovery uses rotated per-contact HMAC values derived from the pairwise discovery secret (§6.4) — no persistent identifier is ever broadcast.
+Contacts are established only through a **connection** (§5.6, registration blueprint §1.1). There is no
+server-side lookup.
 
-Verification (§9) must succeed before a user can publish a prekey bundle or generate/scan a QR pairing code. Verification gates access to key publication; it does not participate in the key agreement itself.
+- **In-person QR:** each device shows a QR code carrying its identity public keys. The scan is mutual,
+  and the resulting contact is `verified`. An ML-DSA-87 public key (~2.6 KB) plus a Curve25519 key is
+  near the limit of the largest QR version. The QR MAY therefore carry the Curve25519 key and a hash of
+  the ML-DSA key; the full ML-DSA key is then fetched with the prekey bundle and MUST match the hash.
+- **Shareable link:** single-use, expiring (default 24 h), revocable, and confirmed by a tap from the
+  recipient (R1.5, R1.5a). The tap is consent, not identity proof. The initiator MAY require ID
+  confirmation (code word or video call, R1.6–R1.7a). Without it, the contact is `unverified`.
+- **Safety code:** a human-comparable code derived from both parties' identity public keys (both the
+  classical and ML-DSA halves). Comparing it out of band, or scanning it in person, upgrades an
+  `unverified` contact to `verified` at any time.
+- **Identity change:** a hard warning for `verified` contacts and a visible notice for `unverified`
+  ones (§5.6).
+
+Registering on a server (§9) is required before a user can publish a prekey bundle or create a
+connection QR or link.
 
 For revocation, per-contact blocking, and re-pairing procedures after device compromise, see §5.5 and §6.4.
 
@@ -1048,7 +1124,11 @@ The RQSM implementation must satisfy OWASP Mobile Top 10. Key implications speci
 - **M2 — Inadequate Supply Chain Security:** `libsignal-client` is **vendored at a pinned commit** (it offers no third-party release/versioning guarantees) and digest-verified, as are all crypto packages, before inclusion. A documented process re-pins and re-audits the vendored libsignal on a defined cadence and on any security advisory. See §18.4.
 - **M5 — Insecure Communication:** All XMPP connections over TLS. Certificate pinning on the primary XMPP server connection.
 - **M9 — Insecure Data Storage:** ratchet store (§5.4) and history store (§5.8) encrypted at rest under hardware-derived keys — subject to the §5.4 encryption-availability caveat (verify against the pinned store version; use SQLCipher or app-layer AEAD if native encryption is absent). CRDT metadata store SQLCipher investigation required (§7.3). At-rest stores excluded from OS backup (§18.5). No key material in `flutter_secure_storage` or `SharedPreferences`.
-- **M10 — Insufficient Cryptographic Controls:** libsignal PQXDH provides post-quantum *confidentiality* **at session establishment** (ML-KEM-1024 + X25519). The Double Ratchet provides forward secrecy and break-in recovery, but its ongoing DH step is classical X25519 — **post-compromise recovery is not quantum-resistant** (§5.1). **Authentication is classical Curve25519 — RQSM does NOT provide post-quantum authentication or non-repudiation** (ML-DSA was dropped to match Signal; a quantum adversary cannot retroactively forge past authentications, which is why this is acceptable). Do not overstate the stack as "post-quantum everything": confidentiality-at-establishment is PQ; per-message ratchet and authentication are classical by design.
+- **M10 — Insufficient Cryptographic Controls (v7):**
+  - **Confidentiality:** post-quantum at session establishment (PQXDH, ML-KEM-1024 + X25519) and on an ongoing basis, including post-compromise recovery, via libsignal's Triple Ratchet (Double Ratchet + SPQR).
+  - **Account-level authentication:** hybrid post-quantum. Server sign-in, device authorization, migration triggers, connection identity material, and prekey bundles carry XEd25519 + ML-DSA dual signatures, and verifiers require both (§5.1).
+  - **Residual:** libsignal's internal per-message and sealed-sender sender authentication remains Curve25519. A future quantum adversary could forge a live sender certificate, but cannot substitute a contact's pinned identity.
+  - Do not overstate the stack as "post-quantum everything". State exactly this split in the security disclosure.
 
 ### 18.3 Localisation
 
@@ -1074,7 +1154,7 @@ No raw string literals in widget code.
 
 **What still requires an independent audit** (the burden is narrowed, not removed):
 
-- The **retained custom crypto**: the P2P `EncryptedEnvelope` + MAC (§5.2), the P2P sealed sender + Blind Trust Token (§5.3.1), and the discovery-beacon HMAC/HKDF layer (§6.4).
+- The **retained custom crypto**: the P2P `EncryptedEnvelope` + MAC (§5.2), the P2P sealed sender + Blind Trust Token (§5.3.1), the discovery-beacon HMAC/HKDF layer (§6.4), and the **hybrid identity layer** (v7): seed-to-key derivation, the XEd25519 + ML-DSA dual-signature wrapper and its verification (including prekey co-signature checks before libsignal), and the hardware wrapping of the master key.
 - The **integration surface**: the `flutter_rust_bridge` boundary and the libsignal store-trait implementations (§5.4) — a correct protocol wired up wrongly is still a vulnerability.
 - The **pinned libsignal commit** itself (supply chain), and the parameter choices (ML-KEM-1024, Curve25519 identity).
 
@@ -1155,7 +1235,8 @@ class FakeTransportDriver implements TransportDriver {
 |---|---|
 | libsignal integration (PQXDH / ratchet) | Interop tests against libsignal (encrypt→decrypt round-trips, out-of-order, key-change); NOT re-derived KATs — the primitive is libsignal's (§18.4) |
 | libsignal store traits (§5.4) | `SessionStore` / `IdentityKeyStore` / `PreKeyStore` / `SignedPreKeyStore` / `KyberPreKeyStore` / `SenderKeyStore` impls persist and reload correctly; encrypted at rest |
-| Prekey establishment (§5.6) | Async session from a libsignal `PreKeyBundle`; `unverified`→`verified` safety-number upgrade; one-time-prekey exhaustion path; key-change warning on a `verified` contact |
+| Connections + prekey establishment (§5.6, §16) | QR connection → `verified`; single-use link consumed once, expired/revoked links refused, `unverified` unless ID-confirmed; bundle rejected if identity differs from the connection or ML-DSA co-signature fails; Async session from a libsignal `PreKeyBundle`; `unverified`→`verified` safety-number upgrade; one-time-prekey exhaustion path; key-change warning on a `verified` contact |
+| Hybrid identity (§5.1) | Seed → identical keys on re-derivation (recovery); every master-identity signature dual and rejected if either half is invalid; master key never persisted unwrapped; KATs for the dual-signature wrapper |
 | Group sender-keys (§5.7) | `SenderKeyDistributionMessage` distribution; **sender-key rotation on member removal**; signature verification rejects forgery |
 | `EncryptedEnvelope` (custom P2P) | Round-trip serialisation; outer header unencrypted; payload encrypted; MAC verified before decrypt; libsignal↔envelope interop |
 | Store-and-forward recognition (§5.2) | Recipient ID derived from carried HLC slot matches after multi-day delay; live-discovery ±1 window unaffected |
@@ -1221,7 +1302,8 @@ All of the following must pass in CI before any PR is merged:
 | **Localisation** | All user-facing strings via `AppLocalizations` — no raw string literals in widget code |
 | **Flavour parity** | Crypto stack identical across dev/staging/prod. No test keys, no disabled encryption, no skipped validation in any flavour |
 | **Platform guards** | `ExternalRadioTransportDriver` USB-OTG code paths gated with `Platform.isAndroid || Platform.isLinux` |
-| **Contact establishment** | Default path is server-distributed prekey bundles (§5.6). New contacts are `unverified`; QR upgrades to `verified`. Never silently re-trust a `verified` contact whose key changed |
+| **Contact establishment** | Connection first, via QR (→ `verified`) or a single-use, expiring link (→ `unverified` unless ID-confirmed), then a prekey bundle fetched by identity key (§5.6, §16). No username lookup. Never silently re-trust a `verified` contact whose key changed |
+| **Hybrid identity** | Every master-identity signature is dual (XEd25519 + ML-DSA); verifiers require both (§5.1). Master key derived from the recovery seed, stored wrapped under a hardware key, never generated inside the secure element (registration blueprint R2.1–R2.1b) |
 | **Group crypto** | libsignal Sender Keys (§5.7). Rotate every remaining member's sender key on any member removal. No group feature ships before the integration is audited |
 | **History at rest** | Persist readable history in the dedicated encrypted history store (§5.8), not the ratchet or CRDT store. `delete` removes from it |
 | **Blocking** | Per-contact discovery keying (§6.4). Block deletes `DS_ab` only; never require re-pairing other contacts to block one |

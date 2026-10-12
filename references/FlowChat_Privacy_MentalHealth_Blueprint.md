@@ -1,7 +1,9 @@
 # FlowChat
 ## Privacy & Mental Health Preservation Blueprint
-*Version 2.2 · July 2026*
+*Version 2.3 · October 2026*
 
+> **v2.3 changes:** aligned to `registration-migration-blueprint.md` v1.1 and RQSM v7 — hybrid (Curve25519 + ML-DSA) account authentication and libsignal Triple Ratchet replace the classical-only stance; open key-based registration with a recovery phrase replaces the verification-method list; connection-first contacts (QR / single-use link) replace username discovery; no server-side message archive. §2.3–§2.5, §3.1, and open items updated.
+>
 > **v2.2 changes:** RQSM crypto now sourced from `libsignal-client` (reuse-vetted-first) — PQXDH with **ML-KEM-1024**, libsignal Sender Keys, and **classical Curve25519 authentication** (ML-DSA dropped; PQ confidentiality but not PQ authentication). §2.3/§2.4 updated accordingly.
 >
 > **v2.1 changes:** recipient-account observation corrected across mode tables; hardware-key claim corrected; invitation field list reconciled with RQSM §5.3.2 (6 fields); added §2.6 push-notification metadata, §3.7 blocking & reporting, §3.8 media & attachments; clarified inactivity measurement, export audit trail locality, and the structural-vs-semantic boundary; escalated multi-device to an architecture dependency.
@@ -56,9 +58,9 @@ FlowChat operates on a spectrum of privacy modes, controlled by where a chat's d
 
 | Mode | Data Lives On | Main Server Observes | Identity |
 |---|---|---|---|
-| **Default Chat** | Main XMPP server | Message routing metadata; sender and recipient identities | Main server username |
-| **Private Server Chat** | External XMPP server | An opaque sealed blob was delivered **to a known recipient account**; approximate timing and payload size. Sender identity and content are blind. | Same username; channel is opaque |
-| **Pure E2EE** | No server-side persistence | An opaque sealed blob was delivered **to a known recipient account**; approximate timing and payload size | Same username |
+| **Default Chat** | Main XMPP server | Message routing metadata; sender and recipient identities | Master identity key (no username) |
+| **Private Server Chat** | External XMPP server | An opaque sealed blob was delivered **to a known recipient account**; approximate timing and payload size. Sender identity and content are blind. | Same master identity key; channel is opaque |
+| **Pure E2EE** | No server-side persistence | An opaque sealed blob was delivered **to a known recipient account**; approximate timing and payload size | Same master identity key |
 
 > **"Zero knowledge" qualification:** Private Server Chat and Pure E2EE modes are *sender-anonymous and content-blind* — not event-blind and not recipient-anonymous. Any server that *delivers* a message must know the recipient account to route to it (the XMPP `to` attribute remains even when `from` is a relay token). The main server always observes that a delivery event to a given recipient occurred, including approximate timing and payload size. Users whose threat model requires concealing the *existence* of a communication channel should understand that sealed sender is a content protection mechanism, not a traffic concealment mechanism.
 
@@ -86,7 +88,7 @@ When two users wish to move a conversation to a private server, the handshake is
 1. Alice constructs an invitation payload and sends it to Bob via sealed sender.
 2. The main server receives an opaque encrypted blob. It observes: a delivery event occurred, approximate timing, approximate payload size. It does not observe: sender identity, content, or that this was a server-routing invitation.
 3. Bob's client decrypts and surfaces the invitation. Bob accepts and the private channel is established.
-4. Identity is not anonymised between Alice and Bob — the same username spans both servers. Opacity is at the channel level, not the identity level.
+4. Identity is not anonymised between Alice and Bob — the same master identity key is registered on both servers (servers never federate; see `registration-migration-blueprint.md` §4). Opacity is at the channel level, not the identity level.
 
 **Required security properties of the invitation payload:**
 
@@ -99,7 +101,7 @@ Every private channel invitation requires **all six** fields below. `RQSM_Bluepr
 | `recipientKeyFingerprint` | Binds the invitation to the intended recipient's identity key — non-transferable |
 | `externalServerAddress` | The external server address, encrypted to the recipient with the hybrid KEM |
 | `externalServerCredentials` | The external server credentials, encrypted to the recipient with the hybrid KEM |
-| `senderSignature` | Classical Curve25519 signature over all fields — prevents forgery |
+| `senderSignature` | Hybrid dual signature (Curve25519 + ML-DSA) over all fields — prevents forgery |
 
 An invitation missing any required field (per RQSM §5.3.2) must be silently rejected by the recipient's client.
 
@@ -108,32 +110,28 @@ An invitation missing any required field (per RQSM §5.3.2) must be silently rej
 The full RQSM specification is maintained in `RQSM_Blueprint.md`. Key guarantees relevant to this blueprint:
 
 - Session, ratchet, and group crypto via **`libsignal-client`** (Signal's own audited Rust implementation, reuse-vetted-first — RQSM §18.4), not a custom protocol stack
-- Post-quantum *confidentiality* via libsignal **PQXDH (ML-KEM-1024 + X25519 hybrid)** at session establishment. The ongoing Double Ratchet DH step is classical — post-compromise recovery is not quantum-resistant (RQSM §5.1)
-- **Authentication is classical Curve25519** (matches Signal). RQSM provides PQ *confidentiality* but **not** PQ authentication/non-repudiation — a deliberate trade-off; a quantum adversary cannot retroactively forge past authentications (RQSM §18.2 M10)
+- Post-quantum *confidentiality* via libsignal **PQXDH (ML-KEM-1024 + X25519 hybrid)** at session establishment, and ongoing PQ forward secrecy and post-compromise recovery via libsignal's **Triple Ratchet** (Double Ratchet + SPQR) (RQSM §5.1)
+- **Hybrid account authentication:** the master identity is Curve25519 + ML-DSA, and every master-identity signature (server sign-in, device authorization, migration, connection identity, prekey bundles) is dual-signed. Residual: libsignal's internal per-message sender authentication stays Curve25519 (RQSM §18.2 M10)
 - Sealed sender: sender identity cannot be inferred by the transport layer or the server (recipient identity is still known to a delivering server). libsignal sealed sender in server-backed XMPP mode; a custom Blind Trust Token path in P2P/mesh (RQSM §5.3)
 - Encrypted envelope pattern with layered visibility (outer header unencrypted; inner header and payload encrypted for recipient only)
 - Driver-plugin transport architecture with automatic fallback logic
 - Pure E2EE mode: no server-side message persistence
-- Asynchronous contact establishment via server-distributed libsignal prekey bundles; QR upgrades a contact to `verified` via safety-number comparison (RQSM §5.6)
+- Connection-first contact establishment: an in-person QR (→ `verified`) or a single-use, expiring link (→ `unverified` unless ID-confirmed), then libsignal prekey bundles fetched by identity key. There is no username directory (RQSM §5.6, §16)
 - Group messaging via **libsignal Sender Keys** (RQSM §5.7)
 - Per-contact blocking and discovery revocation (RQSM §6.4)
 - **Hardware-backed key storage:** the long-term wrapping key never leaves the device's secure element. Derived and per-message keys are ephemeral in app memory while in use and are never persisted — they cannot be kept entirely out of memory in a Dart app (RQSM §5.4, §18.4). On Linux, which usually has no secure element, the guarantee is weaker (OS keyring or passphrase-derived key)
 
-## 2.5 Human Verification & Onboarding
+## 2.5 Registration & Onboarding
 
-To prevent bot registration while preserving privacy, the following verification approach is used:
+Governed by `registration-migration-blueprint.md`. In summary:
 
-- Phone number not required — avoids linkability to real-world identity and SIM-swap risk
-- Supported verification methods (configurable per server deployment):
-  - **Invite-only** — existing member generates a one-time link; link expires after use or after a configurable TTL
-  - **Admin approval** — username/email registration with admin review before activation
-  - **Email + CAPTCHA** — lower friction, filters bots
-- Server operators choose their verification model. The main public server uses invite-only or admin approval by default.
-- After verification, contacts are established by default via server-distributed prekey bundles (`RQSM_Blueprint.md §5.6`); QR pairing is the out-of-band upgrade to a `verified` contact, not the only way to reach someone.
+- **Open, key-based registration:** an account is a client-generated hybrid identity key derived from a recovery seed. Registering on a server publishes only public keys. No phone number, email, username, or password is collected — there is no real-world-linkable identifier at all.
+- **Recovery:** a recovery phrase is generated silently at signup and surfaced later as a soft "secure your account" nudge. It restores the identity, but not message history, which is never stored on a server.
+- **No directory:** people connect by in-person QR or a single-use, expiring link. Nobody can be found by searching.
+- **Invites gate groups, not accounts:** joining a family or team group requires a recipient-bound invite sent over an existing connection.
+- **Bot / spam pressure:** with no directory, a fresh account can reach only people who chose to connect with it, so open registration does not by itself create a spam channel.
 
-> **Verification record retention — Email + CAPTCHA:** For email + CAPTCHA verification, the email address and confirmation token must be discarded immediately after the account is confirmed. These records must not be stored alongside or linked to the user's identity key, username, or any persistent account record. Retaining them creates a permanent email → identity linkage that undermines the no-phone-number privacy guarantee.
-
-> **Offline onboarding constraint:** verification and prekey publication require reaching a server, so a brand-new account cannot be created during a total internet blackout. Resilience applies to already-established identities and their sessions (which continue over the mesh transports), not to first-time onboarding. Two users onboarding during a blackout must use the QR-only path. See `RQSM_Blueprint.md §9`.
+> **Offline onboarding constraint:** key publication requires reaching a server, so a brand-new account cannot be created during a total internet blackout. Resilience applies to already-established identities and their sessions (which continue over the mesh transports), not to first-time onboarding. Two users onboarding during a blackout must use the QR-only path. See `RQSM_Blueprint.md §9`.
 
 ## 2.6 Push Notification Metadata
 
@@ -151,10 +149,10 @@ Every feature in Layers 2 and 3 assumes notifications work. That assumption has 
 
 ## 3.1 Identity & Discoverability
 
-- Username-based identity (no phone number required)
-- Control who can find you by username
-- Control who can add you to groups: everybody / contacts / nobody
-- Control who can send you direct messages
+- Key-based identity with a self-asserted, end-to-end-encrypted display name. There is no phone number, username, or searchable handle (`registration-migration-blueprint.md` §1.1, R1.9)
+- Nobody can find you: contact requires a QR scan or a single-use link you chose to share
+- Control who can add you to groups: group entry always requires a recipient-bound invite over an existing connection, plus each group's own invite-confirmation policy (R1.2a, R1.18)
+- Direct messages are possible only with people you have connected with
 
 ## 3.2 Presence Controls
 
@@ -383,15 +381,15 @@ Cyberbullying controls are parked for a dedicated future blueprint. Before that 
 - **Coordinated pile-ons:** multiple group members directing simultaneous negative signals at a target; the harm is amplified by volume and coordination, not any single message.
 - **Forwarding abuse:** messages taken out of context and re-shared into groups where the original sender has no presence; the sender cannot respond or correct the record.
 - **Screenshot-and-share:** content captured and redistributed outside the app; ephemeral and auto-delete features provide partial mitigation but cannot prevent this.
-- **Identity impersonation in group contexts:** a bad actor creating a username or display name designed to be confused with a trusted contact; the trust model relies on username clarity.
+- **Identity impersonation in group contexts:** a bad actor choosing a self-asserted display name designed to be confused with a trusted contact. Display names are not unique or verified, so the trust model relies on verification state and connection history, not names.
 - **Trusted signal abuse in group settings:** a group moderator with trusted tier status using priority flags to direct group attention toward a target.
 
 The future blueprint should address each axis with specific feature proposals, explicit accountability trade-offs, and harm ceilings.
 
 ## Other Open Items
 
-- **Identity & onboarding model** — finalise verification method defaults for the main public server deployment.
-- **Multi-device support** — *escalated from an open item to a cryptographic-architecture dependency.* Multi-device is not a UI feature; it requires a decision on per-device identity keys vs shared identity, cross-device session/sender-key synchronisation, and how a second device joins existing pairwise and group sessions. It interacts directly with prekeys (`RQSM §5.6`), sender-keys (`RQSM §5.7`), and history sync (`RQSM §5.8`). Must be resolved in RQSM before any multi-device UX is designed. Per-device notification deduplication (§4.2.1) sits on top of this and cannot be fully specified until it lands.
+- ~~**Identity & onboarding model** — finalise verification method defaults for the main public server deployment.~~ **Resolved** by `registration-migration-blueprint.md` (open key-based registration; invites gate groups only).
+- **Multi-device support** — *escalated from an open item to a cryptographic-architecture dependency.* Multi-device is not a UI feature; it requires a decision on per-device identity keys vs shared identity, cross-device session/sender-key synchronisation, and how a second device joins existing pairwise and group sessions. It interacts directly with prekeys (`RQSM §5.6`), sender-keys (`RQSM §5.7`), and history sync (`RQSM §5.8`). Must be resolved in RQSM before any multi-device UX is designed. Per-device notification deduplication (§4.2.1) sits on top of this and cannot be fully specified until it lands. **Update (v2.3):** the account-level model — one master identity plus independently revocable subordinate device keys — is now defined in `registration-migration-blueprint.md` §3.3; cross-device session, sender-key, and history synchronisation remain open.
 - **Calendar integration spec** — exactly which calendar events trigger mute, buffer time configuration, cross-platform calendar access.
 - **Key session continuity and unilateral server reassignment** — (a) what happens to an active Double Ratchet session when a chat is moved between folders that reference different XMPP servers. Working assumption: the ratchet session continues (it is transport-agnostic); server-side message history is not migrated. (b) Server assignment is bilateral (§2.2): define what the *other* participant's client does when one party unilaterally reassigns a chat's server — silent follow, prompt, or reject. To be confirmed in RQSM implementation.
 - **Axis-by-axis privacy feature scenarios** — detailed scenario brainstorm for each harm axis (queued).

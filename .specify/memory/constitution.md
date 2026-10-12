@@ -5,15 +5,19 @@
 ### I. Reference Constitution Is Authoritative
 
 This file is the Spec Kit gate. The full, binding rule set is
-`references/flutter_constitution.md` (v2.0.0). Where they disagree, the reference wins, and this file
+`references/flutter_constitution.md` (v2.1.0). Where they disagree, the reference wins, and this file
 MUST be corrected in the same change.
 
 - Agents MUST read `references/flutter_constitution.md` in full before any plan, code, or test.
-- Authority order for conflicts: (1) `references/flutter_constitution.md`,
-  (2) `references/RQSM_Blueprint.md` for cryptography, transports, and platform security,
-  (3) `references/FlowChat_Privacy_MentalHealth_Blueprint.md` for privacy and mental-health
-  features. Where the RQSM blueprint states a security rule, it restates a constitution rule
-  (C1–C20) in project-specific terms; it does not override one.
+- Authority order for conflicts:
+  (1) `references/flutter_constitution.md`;
+  (2) `references/registration-migration-blueprint.md` for identity, registration, connections,
+  recovery, multi-server use, and chat migration;
+  (3) `references/RQSM_Blueprint.md` for cryptography, transports, and platform security — on the
+  topics in (2), RQSM MUST be corrected to match (2);
+  (4) `references/FlowChat_Privacy_MentalHealth_Blueprint.md` for privacy and mental-health features.
+  Where a blueprint states a security rule, it restates a constitution rule (C1–C20) in
+  project-specific terms; it does not override one.
 - MVP scope is bounded; deferred scope lives in `references/Future_Features_Roadmap.md` and MUST
   NOT be pulled into a feature without its own spec.
 
@@ -51,8 +55,15 @@ testable.
 - **No third-party telemetry or analytics SDKs (C12)**. Crash sinks are self-hosted or
   on-device, and payloads are scrubbed.
 - **Flavour parity (C6)**: crypto configuration is identical across `dev`, `staging`, and `prod`.
-- Security claims MUST stay honest. Post-quantum confidentiality applies at session
-  establishment; authentication is classical. Adversary residuals are disclosed to users.
+- **Identity**: an account is a hybrid (Curve25519 + ML-DSA) identity derived from a recovery
+  seed and stored wrapped under a hardware key. Every master-identity signature is dual. No
+  username, password, email, or phone number is collected, and there is no searchable directory.
+- Security claims MUST stay honest and match RQSM M10 exactly:
+  - confidentiality is post-quantum, at establishment (PQXDH) and on an ongoing basis (Triple
+    Ratchet);
+  - account-level authentication is hybrid;
+  - libsignal's internal per-message sender authentication remains classical.
+  Adversary residuals are disclosed to users.
 - Decrypted content in presentation state MUST be cleared on lock and logout (C20).
 
 **Rationale**: DaChat's purpose is privacy against servers, networks, and device seizure. A single
@@ -115,10 +126,14 @@ generated artifacts. Thin Cubits keep a future state-library migration cheap.
   disclosed.
 - **Core stack**: Flutter/Dart 3, `go_router`, `dio` + `retrofit`, `flutter_bloc`, `get_it` +
   `injectable`, `freezed`, `fpdart`, `isar`, `event_bus`, `logger`, `very_good_analysis`.
-- **Messaging**: XMPP (`moxxmpp`) is the primary transport. The MVP is internet-first and
-  single-device. Mesh transports are deferred per the roadmap.
-- **Crypto**: `libsignal-client` via `flutter_rust_bridge`: PQXDH (ML-KEM-1024 + X25519),
-  Double Ratchet, Sender Keys, and Curve25519 identity.
+- **Messaging**: XMPP (`moxxmpp`) is the primary transport. Servers never federate, and each chat
+  lives on exactly one server. The MVP is internet-first, main-server-only, and single-device. Mesh
+  transports are deferred per the roadmap.
+- **Crypto**: `libsignal-client` via `flutter_rust_bridge`: PQXDH (ML-KEM-1024 + X25519), the
+  Triple Ratchet (Double Ratchet + SPQR), and Sender Keys. The hybrid master identity is Curve25519
+  + ML-DSA-87, using a vetted ML-DSA implementation.
+- **No server archive**: servers hold encrypted messages only until delivery. Readable history
+  exists only on devices.
 - **Platform hardening**: `FLAG_SECURE` / snapshot blur on sensitive screens. Push-timing metadata
   exposure is documented.
 
@@ -152,4 +167,4 @@ generated artifacts. Thin Cubits keep a future state-library migration cheap.
   Complexity beyond these principles MUST be justified in the plan's Complexity Tracking table.
 - Runtime agent guidance lives in `AGENTS.md` (imported by `CLAUDE.md`).
 
-**Version**: 2.0.0 | **Ratified**: 2026-10-06 | **Last Amended**: 2026-10-06
+**Version**: 2.1.0 | **Ratified**: 2026-10-06 | **Last Amended**: 2026-10-12

@@ -52,6 +52,10 @@
   |              | examples no longer use unresolvable `[Cn]` references.      |
   |              | "-lean" suffix dropped; file renamed to the version-free    |
   |              | `flutter_constitution.md`.                                  |
+  | 2.1.0        | MINOR: GOVERNANCE lists the supporting documents in         |
+  |              | authority order, adding registration-migration-blueprint.md |
+  |              | (identity, registration, connections, servers, migration)   |
+  |              | ahead of RQSM on those topics. No C-rule changes.           |
 
   Decisions on record:
   - Storage:    isar only (hive removed)
@@ -75,7 +79,7 @@
   - Crypto CI:  cryptographic config identical across all flavours
 -->
 
-# Flutter Constitution · v2.0.0
+# Flutter Constitution · v2.1.0
 
 > **Agent instruction**: Read this file in full before producing any plan,
 > code, or test. Every MUST is a hard rule. Every MUST NOT is an absolute
@@ -777,6 +781,19 @@ Only use packages from this list. Justify any addition in the plan.
 This constitution supersedes all other project conventions. Violations require
 refactoring — never a workaround or exception.
 
+**Supporting documents** (project-specific, subordinate to this constitution), in
+authority order:
+1. `registration-migration-blueprint.md` — identity, registration, connections,
+   recovery, multi-server use, chat migration.
+2. `RQSM_Blueprint.md` — cryptography, transports, platform security. On the
+   topics in (1), RQSM MUST be corrected to match (1).
+3. `FlowChat_Privacy_MentalHealth_Blueprint.md` — privacy and mental-health
+   features.
+
+A blueprint security rule restates a C-rule in project terms; it never
+overrides one. The Spec Kit gate (`.specify/memory/constitution.md`) mirrors
+this file with a matching version number.
+
 **Amendment procedure**: propose with rationale → team approval → migration
 plan for non-compliant code → update file + bump version + update change log.
 
@@ -1083,4 +1100,4 @@ testWidgets('renders the failure variant', (tester) async {
 
 ---
 
-**Version**: 2.0.0 | **Last Amended**: 2026-10-06
+**Version**: 2.1.0 | **Last Amended**: 2026-10-12
